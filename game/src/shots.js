@@ -1,154 +1,82 @@
-// EMBERLINE — shots.js (round 3 redo)
-// Screenshot staging: ?shot=<name> puts the real game into a real,
-// playable state — menu, busy street, police chase, crate run — with the
-// same traffic, police, missions and HUD a player gets. Nothing is fake
-// scenery; the staging only arranges the live systems for the camera.
-// Each stage is one function in the STAGES table below.
-import { spawnCar, randomCarColor } from './vehicles.js';
-import { spawnPed } from './pedestrians.js';
-import { startMission, MISSIONS } from './missions.js';
-import { addHeat } from './wanted.js';
-import { GAME_TITLE } from './config.js';
+// EMBERLINE staged shots — ?shot=<name> poses a deterministic scene,
+// then sets window.__shotReady so the capture driver can screenshot.
+import { PLACES } from './missions.js';
 
-function stagedRng(seed) {
-  let state = (seed >>> 0) || 1;
-  return function next() {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    return (state >>> 0) / 4294967296;
-  };
-}
-
-function removeActors(G, predicate, listName) {
-  for (const actor of [...G[listName]]) {
-    if (!predicate(actor)) continue;
-    actor.alive = false;
-    G.scene.remove(actor.mesh);
-    G[listName].splice(G[listName].indexOf(actor), 1);
-  }
-}
-
-function clearAmbient(G) {
-  removeActors(G, (car) => car.kind === 'traffic', 'cars');
-  removeActors(G, (ped) => ped.kind === 'walker', 'peds');
-}
-
-function clearCruisers(G) {
-  for (const cop of [...G.wanted.police]) {
-    cop.alive = false;
-    G.scene.remove(cop.mesh);
-    const idx = G.cars.indexOf(cop);
-    if (idx >= 0) G.cars.splice(idx, 1);
-  }
-  G.wanted.police.length = 0;
-}
-
-function populateAvenue(G, rng, cx, cz, carCount) {
-  for (let i = 0; i < carCount; i++) {
-    const lane = (rng() < 0.5 ? -1 : 1) * 4;
-    const along = (rng() - 0.5) * 160;
-    const heading = rng() < 0.5 ? 0 : Math.PI;
-    const car = spawnCar(G.scene, cx + lane, cz + along, heading, randomCarColor(rng), 'traffic');
-    car.target = { x: cx + lane, z: cz + along + (heading === 0 ? 200 : -200) };
-    G.cars.push(car);
-  }
-  for (let i = 0; i < 8; i++) {
-    G.peds.push(spawnPed(G.scene, cx + (rng() - 0.5) * 30, cz + (rng() - 0.5) * 60, rng));
-  }
-}
-
-function keepCameraClear(G) {
-  // The chase camera sits ~7m behind the player; push staged cars out of it.
-  for (const car of G.cars) {
-    if (car.kind !== 'traffic') continue;
-    const d = Math.hypot(car.pos.x - G.player.pos.x, car.pos.z - G.player.pos.z);
-    if (d < 14) {
-      car.pos.z += 30;
-      car.mesh.position.copy(car.pos);
-      if (car.target) car.target.z += 30;
-    }
-  }
-}
-
-const STAGES = {
-  start(G) {
-    G.mode = 'menu';
+const SHOTS = {
+  // Player driving the orange coupe down a city road at sunset.
+  drive: (game) => {
+    const coupe = game.vehicles.list.find((v) => v.label === 'coupe');
+    coupe.group.position.set(-60, 0, 2);
+    coupe.heading = Math.PI / 2;
+    coupe.group.rotation.y = coupe.heading;
+    game.enterVehicle(coupe);
+    coupe.speed = 8;
+    game.camMode = 'chase';
+    game.snapCamera();
+    game.hud.hideMenu();
+    game.state = 'playing';
   },
-
-  street(G, rng) {
-    G.player.pos.set(-6, 0, -40);
-    G.player.yaw = 0;
-    G.player.mesh.position.copy(G.player.pos);
-    populateAvenue(G, rng, 0, 0, 7);
-    keepCameraClear(G);
-    startMission(G, 0);
-    G.player.cash = 50;
+  // On foot on a busy street, pedestrians and neon around.
+  street: (game) => {
+    game.player.setPos(-24, -30, -2.2);
+    game.player.health = 82;
+    game.wanted.add(2, 'staged');
+    // Pull three pedestrians into frame near the player.
+    game.peds.list.slice(0, 3).forEach((p, i) => {
+      p.group.position.set(-30 + i * 5, 0, -38 + i * 3);
+    });
+    game.camMode = 'third';
+    game.snapCamera();
+    game.hud.hideMenu();
+    game.state = 'playing';
   },
-
-  drive(G, rng) {
-    const heroCar = spawnCar(G.scene, 0, -60, 0, 0xe8c23a, 'traffic');
-    heroCar.parked = false;
-    G.cars.push(heroCar);
-    G.enterCar(heroCar, true);
-    heroCar.speed = 24;
-    G.shotInput = { up: true };
-    G.missions.index = 2;
-    startMission(G, 2);
-    // Two formation cruisers flank the player so the chase stays in frame.
-    clearCruisers(G);
-    G.wanted.level = 3;
-    G.wanted.quietTimer = 0;
-    G.sound.sirenStart();
-    G.wanted.sirenOn = true;
-    for (const [dx, dz] of [[-5, 2], [5, 7]]) {
-      const cop = spawnCar(G.scene, dx, -60 + dz, 0, 0x14181c, 'police');
-      cop.shotFollow = { dx, dz };
-      G.cars.push(cop);
-      G.wanted.police.push(cop);
-    }
-    G.player.cash = 1250;
+  // Mission marker active: the garage delivery on Crane Street.
+  mission: (game) => {
+    game.missions.index = 0;
+    game.missions.step = 1;
+    game.missions._showStep();
+    const coupe = game.vehicles.list.find((v) => v.label === 'coupe');
+    coupe.group.position.set(2, 0, -20);
+    coupe.heading = Math.PI;
+    coupe.group.rotation.y = coupe.heading;
+    game.enterVehicle(coupe);
+    coupe.speed = 6;
+    game.camMode = 'chase';
+    game.snapCamera();
+    game.hud.hideMenu();
+    game.state = 'playing';
   },
-
-  mission(G, rng) {
-    const nextCrate = MISSIONS[3].packages[1];
-    G.player.pos.set(nextCrate.x - 20, 0, nextCrate.z - 20);
-    G.player.yaw = Math.PI * 0.25;
-    G.player.mesh.position.copy(G.player.pos);
-    populateAvenue(G, rng, nextCrate.x - 30, nextCrate.z - 30, 4);
-    G.missions.index = 3;
-    startMission(G, 3);
-    G.missions.collected = 1;
-    G.missions.packageIndex = 1;
-    G.missions.beaconPos = { x: nextCrate.x, z: nextCrate.z };
-    const collectedBeacon = G.missions.pkgMeshes[0];
-    if (collectedBeacon) G.scene.remove(collectedBeacon);
-    addHeat(G, 1, 'Speeding past a cruiser');
-    // Cruiser closes in from the east so it stays out of the camera lane.
-    const cop = spawnCar(G.scene, nextCrate.x + 45, nextCrate.z - 45, Math.PI * 0.5, 0x14181c, 'police');
-    G.cars.push(cop);
-    G.wanted.police.push(cop);
-    G.player.cash = 820;
+  // Start menu over the city.
+  start: (game) => {
+    game.state = 'menu';
+    game.hud.showMenu('EMBERLINE', 'Open-world crime at sunset — steal, drive, survive the harbour.', '▶  START ENGINE');
+    game.camMode = 'orbit';
   },
 };
 
-export function applyShot(G, name) {
-  const rng = stagedRng(20261124);
-  const stage = STAGES[name];
-  if (!stage) return;
-  G.shotMode = true;
-  document.title = GAME_TITLE + ' — shot: ' + name;
-  clearAmbient(G);
-  document.getElementById('hud').style.display = name === 'start' ? 'none' : 'block';
-
-  if (name === 'start') {
-    stage(G);
-    return;
+export function applyShot(game) {
+  const params = new URLSearchParams(window.location.search);
+  const name = params.get('shot');
+  if (!name || !SHOTS[name]) return false;
+  try {
+    SHOTS[name](game);
+  } catch (e) {
+    console.error('shot staging failed', e);
+    return false;
   }
-
-  G.startGame(false);
-  G.hud.el.hint.style.opacity = '0';
-  stage(G, rng);
+  // Let the scene settle (camera lerp, car roll, beacon pulse), then signal.
+  let frames = 0;
+  const tick = () => {
+    frames += 1;
+    if (frames >= 30) {
+      window.__emberlineShot = name;
+      window.__shotReady = true;
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  return true;
 }
 
-export const SHOT_NAMES = ['start', 'street', 'drive', 'mission'];
+export function shotNames() { return Object.keys(SHOTS); }

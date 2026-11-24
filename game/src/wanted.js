@@ -1,184 +1,88 @@
-// EMBERLINE — wanted.js (round 3 redo)
-// The wanted ladder: crimes add heat, Harbor PD dispatches cruisers to
-// match, and a quiet stretch with no cruiser nearby cools one star at a
-// time. Speeding past a cruiser counts too. On foot, sustained contact
-// with a stopped cruiser is a bust.
+// EMBERLINE wanted — heat stars, pursuing officers, busted.
+import * as THREE from '../vendor/three/three.module.min.js';
 import { WANTED } from './config.js';
-import { spawnCar, updatePoliceCar, spinWheels } from './vehicles.js';
 
-// Cruisers on the street per wanted level (index = level).
-const CRUISERS_PER_LEVEL = [0, 2, 3, 3, 4, 4];
-
-export function createWanted() {
-  return {
-    level: 0,
-    quietTimer: 0,
-    bustTimer: 0,
-    police: [],
-    sirenOn: false,
-    speedingTimer: 0, // cooldown between speeding tickets
-  };
-}
-
-export function addHeat(G, amount, reason) {
-  const wanted = G.wanted;
-  const previousLevel = wanted.level;
-  wanted.level = Math.min(WANTED.max, wanted.level + amount);
-  wanted.quietTimer = 0;
-  if (wanted.level > previousLevel) {
-    G.hudMessage(`WANTED LEVEL ${wanted.level} — ${reason}`, 'bad');
-    G.sound.sirenStart();
-    wanted.sirenOn = true;
-  }
-  syncPolice(G);
-}
-
-// Keep the cruiser count matched to the wanted level.
-export function syncPolice(G) {
-  const wanted = G.wanted;
-  const desired = CRUISERS_PER_LEVEL[wanted.level] ?? 0;
-  while (wanted.police.length < desired) {
-    const p = G.player.pos;
-    const angle = Math.random() * Math.PI * 2;
-    const distance = 70 + Math.random() * 40;
-    const x = Math.max(-200, Math.min(200, p.x + Math.cos(angle) * distance));
-    const z = Math.max(-200, Math.min(200, p.z + Math.sin(angle) * distance));
-    const cruiser = spawnCar(G.scene, x, z, Math.random() * Math.PI * 2, 0x14181c, 'police');
-    wanted.police.push(cruiser);
-    G.cars.push(cruiser);
-  }
-  while (wanted.police.length > desired) {
-    const cruiser = wanted.police.pop();
-    cruiser.alive = false;
-    G.scene.remove(cruiser.mesh);
-    const idx = G.cars.indexOf(cruiser);
-    if (idx >= 0) G.cars.splice(idx, 1);
-  }
-  if (wanted.level === 0 && wanted.sirenOn) {
-    G.sound.sirenStop();
-    wanted.sirenOn = false;
-  }
-}
-
-function nearestCruiserDistance(G) {
-  let nearest = Infinity;
-  for (const cruiser of G.wanted.police) {
-    const d = Math.hypot(cruiser.pos.x - G.player.pos.x, cruiser.pos.z - G.player.pos.z);
-    if (d < nearest) nearest = d;
-  }
-  return nearest;
-}
-
-// Blowing past a cruiser at speed earns a star (with a cooldown so one
-// pass cannot stack the whole ladder).
-export function checkSpeeding(G, dt) {
-  const wanted = G.wanted;
-  if (wanted.speedingTimer > 0) wanted.speedingTimer -= dt;
-  const car = G.player.car;
-  if (!car || G.player.onFoot || wanted.speedingTimer > 0) return;
-  if (Math.abs(car.speed) * 3.6 < WANTED.speedingSpeed) return;
-  if (nearestCruiserDistance(G) > WANTED.speedingRange) return;
-  wanted.speedingTimer = WANTED.speedingCooldown;
-  addHeat(G, WANTED.heatSpeeding, 'Speeding past a cruiser');
-}
-
-export function updateWanted(G, dt) {
-  const wanted = G.wanted;
-  if (wanted.level === 0) return;
-  wanted.quietTimer += dt;
-
-  // Heat cools only when the street has been quiet AND cruisers are far.
-  if (wanted.quietTimer > WANTED.decaySeconds && nearestCruiserDistance(G) > WANTED.coolDistance) {
-    wanted.level -= 1;
-    wanted.quietTimer = 0;
-    G.hudMessage(
-      wanted.level > 0 ? `Heat cooling… wanted level ${wanted.level}` : 'You lost them. Heat is off.',
-      'good',
-    );
-    syncPolice(G);
+export class Wanted {
+  constructor(scene, hud) {
+    this.scene = scene;
+    this.hud = hud;
+    this.stars = 0;          // float, displayed floored
+    this.cops = [];          // {group, speed}
+    this.busted = false;
+    this.spawnT = 0;
+    this.copMat = new THREE.MeshLambertMaterial({ color: 0x1d3f8a });
   }
 
-  // Busted check: on foot with a slow cruiser parked on top of you.
-  if (G.player.onFoot) {
-    let inContact = false;
-    for (const cruiser of wanted.police) {
-      const d = Math.hypot(cruiser.pos.x - G.player.pos.x, cruiser.pos.z - G.player.pos.z);
-      if (d < WANTED.bustDistance && Math.abs(cruiser.speed) < 4) inContact = true;
+  get level() { return Math.min(WANTED.maxStars, Math.floor(this.stars + 0.001)); }
+
+  add(amount, reason) {
+    this.stars = Math.min(WANTED.maxStars, this.stars + amount);
+    this.hud?.message(`Wanted +${amount} — ${reason}`);
+    this.hud?.setStars(this.level);
+  }
+
+  setStars(n) {
+    this.stars = n;
+    this.hud?.setStars(this.level);
+  }
+
+  spawnCop(x, z) {
+    const g = new THREE.Group();
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.32), this.copMat);
+    torso.position.y = 1.05;
+    g.add(torso);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), new THREE.MeshLambertMaterial({ color: 0xc98e6b }));
+    head.position.y = 1.68;
+    g.add(head);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.14, 10), new THREE.MeshLambertMaterial({ color: 0x101418 }));
+    cap.position.y = 1.9;
+    g.add(cap);
+    g.position.set(x, 0, z);
+    this.scene.add(g);
+    const cop = { group: g, speed: WANTED.copChaseSpeed };
+    this.cops.push(cop);
+    return cop;
+  }
+
+  clearCops() {
+    for (const c of this.cops) this.scene.remove(c.group);
+    this.cops = [];
+  }
+
+  update(dt, playerX, playerZ, player) {
+    if (this.busted) return;
+    // Heat melts when quiet.
+    if (this.stars > 0) {
+      this.stars = Math.max(0, this.stars - WANTED.decayPerSec * dt);
+      const lvl = this.level;
+      if (lvl !== this._shown) { this._shown = lvl; this.hud?.setStars(lvl); }
     }
-    if (inContact) {
-      wanted.bustTimer += dt;
-      G.hudFlash('bust');
-      if (wanted.bustTimer >= WANTED.bustSeconds) {
-        wanted.bustTimer = 0;
-        G.busted();
+    const want = this.level;
+    // Keep roughly one cop per star, spawning at a distance.
+    this.spawnT -= dt;
+    if (this.cops.length < want && this.spawnT <= 0) {
+      this.spawnT = 2.5;
+      const a = Math.random() * Math.PI * 2;
+      this.spawnCop(playerX + Math.sin(a) * 30, playerZ + Math.cos(a) * 30);
+    }
+    while (this.cops.length > want) {
+      const c = this.cops.pop();
+      this.scene.remove(c.group);
+    }
+    // Chase.
+    for (const c of this.cops) {
+      const dx = playerX - c.group.position.x;
+      const dz = playerZ - c.group.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 0.01) {
+        c.group.position.x += (dx / d) * c.speed * dt;
+        c.group.position.z += (dz / d) * c.speed * dt;
+        c.group.rotation.y = Math.atan2(dx, dz);
       }
-    } else {
-      wanted.bustTimer = Math.max(0, wanted.bustTimer - dt * 2);
-    }
-  } else {
-    wanted.bustTimer = 0;
-  }
-}
-
-function shovePlayer(G, cruiser) {
-  const dx = G.player.pos.x - cruiser.pos.x;
-  const dz = G.player.pos.z - cruiser.pos.z;
-  const d = Math.hypot(dx, dz) || 1;
-  G.player.pos.x += (dx / d) * 1.2;
-  G.player.pos.z += (dz / d) * 1.2;
-  G.player.hp = Math.max(0, G.player.hp - 4);
-  G.sound.thud();
-  if (G.player.hp <= 0) G.wasted();
-}
-
-function updateFormationCruiser(cruiser, anchor, dt) {
-  // Screenshot staging: formation cruisers hold station beside the player.
-  const { dx, dz } = cruiser.shotFollow;
-  const sin = Math.sin(anchor.yaw);
-  const cos = Math.cos(anchor.yaw);
-  cruiser.pos.x = anchor.pos.x + cos * dx + sin * dz;
-  cruiser.pos.z = anchor.pos.z - sin * dx + cos * dz;
-  cruiser.yaw = anchor.yaw;
-  cruiser.speed = anchor.speed || 0;
-  cruiser.mesh.position.copy(cruiser.pos);
-  cruiser.mesh.rotation.y = cruiser.yaw;
-  spinWheels(cruiser, dt);
-  cruiser.flashT += dt * 6;
-  if (cruiser.lightBar) {
-    const redOn = Math.sin(cruiser.flashT) > 0;
-    cruiser.lightBar.red.material.color.setHex(redOn ? 0xff2222 : 0x551111);
-    cruiser.lightBar.blue.material.color.setHex(redOn ? 0x111155 : 0x2244ff);
-  }
-}
-
-export function updatePolice(G, dt) {
-  for (const cruiser of G.wanted.police) {
-    if (!cruiser.alive) continue;
-    if (G.shotMode && cruiser.shotFollow) {
-      updateFormationCruiser(cruiser, G.player.car || G.player, dt);
-      continue;
-    }
-    updatePoliceCar(cruiser, G.player.pos, dt, G.city.colliders, G.cars, (cop) => {
-      if (G.player.onFoot) {
-        const d = Math.hypot(cop.pos.x - G.player.pos.x, cop.pos.z - G.player.pos.z);
-        if (d < 2.6) shovePlayer(G, cop);
-      } else if (G.player.car) {
-        G.player.car.speed *= 0.94;
-        if (Math.abs(cop.speed) > 12) {
-          G.sound.crash();
-          G.player.hp = Math.max(0, G.player.hp - 2);
-          if (G.player.hp <= 0) G.wasted();
-        }
+      if (d < WANTED.bustRadius && !player.dead) {
+        this.busted = true;
+        this.hud?.message('BUSTED — the harbour police got you.');
       }
-    });
+    }
   }
-}
-
-export function clearWanted(G) {
-  const wanted = G.wanted;
-  wanted.level = 0;
-  wanted.quietTimer = 0;
-  wanted.bustTimer = 0;
-  wanted.speedingTimer = 0;
-  syncPolice(G);
 }

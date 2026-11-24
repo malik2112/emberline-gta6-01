@@ -1,168 +1,75 @@
-// EMBERLINE — combat.js (round 3 redo)
-// The pistol: hitscan shots from the camera centre with spread that blooms
-// under rapid fire, tracer lines, a pooled muzzle-flash light, timed
-// reloads, a small camera kick per shot, player damage, and rival gunmen
-// who return fire in bursts. Hit testing is a manual ray-vs-body-cylinder
-// check, so it needs no scene-graph raycast.
-import * as THREE from 'three';
-import { COMBAT } from './config.js';
+// EMBERLINE combat — hitscan pistol with tracer, ammo, reload.
+import * as THREE from '../vendor/three/three.module.min.js';
 
-export function createCombat() {
-  return {
-    ammo: COMBAT.magSize,
-    reserve: 999,
-    reloading: false,
-    reloadTimer: 0,
-    fireTimer: 0,
-    tracers: [],
-    flashes: [],
-    bloom: 0, // accumulated spread from recent shots
-  };
-}
-
-function addTracer(G, from, to, color, life) {
-  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
-    color, transparent: true, opacity: 0.9,
-  }));
-  G.scene.add(line);
-  G.combat.tracers.push({ line, life, maxLife: life });
-}
-
-// Manual ray vs. upright body cylinder: a target counts as hit when the
-// ray passes within bodyRadius of the spine between hip and head height.
-function rayHitsBody(origin, dir, target) {
-  const spineX = target.pos.x - origin.x;
-  const spineZ = target.pos.z - origin.z;
-  const along = spineX * dir.x + spineZ * dir.z;
-  if (along < 0 || along > COMBAT.range) return null;
-  const closestX = origin.x + dir.x * along;
-  const closestZ = origin.z + dir.z * along;
-  const side = Math.hypot(closestX - target.pos.x, closestZ - target.pos.z);
-  if (side > 0.62) return null;
-  const heightAt = origin.y + dir.y * along;
-  if (heightAt < 0.15 || heightAt > 1.95) return null;
-  return along;
-}
-
-// Fire one shot. targets: shootable objects {pos, hp, alive, kind, mesh}.
-// Returns {hit, end} or null when the gun cannot fire.
-export function fireWeapon(G, targets) {
-  const combat = G.combat;
-  if (combat.reloading || combat.fireTimer > 0 || combat.ammo <= 0) {
-    if (combat.ammo <= 0) G.sound.dryClick();
-    return null;
+export class Combat {
+  constructor(scene, audio) {
+    this.scene = scene;
+    this.audio = audio;
+    this.ammo = 12;
+    this.magSize = 12;
+    this.reserve = 48;
+    this.cooldown = 0;
+    this.ray = new THREE.Raycaster();
+    this.tracer = null;
+    this.tracerT = 0;
+    this.flash = new THREE.PointLight(0xffc46b, 0, 12);
+    this.scene.add(this.flash);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    this.tracer = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe9a8 }));
+    this.tracer.visible = false;
+    this.scene.add(this.tracer);
   }
-  combat.fireTimer = COMBAT.fireInterval;
-  combat.ammo -= 1;
-  combat.bloom = Math.min(0.05, combat.bloom + COMBAT.spreadBloom);
-  G.sound.shot();
-  G.kick = (G.kick || 0) + COMBAT.cameraKick;
 
-  const origin = G.camera.position.clone();
-  const dir = new THREE.Vector3();
-  G.camera.getWorldDirection(dir);
-  const spread = COMBAT.spreadBase + combat.bloom;
-  dir.x += (Math.random() - 0.5) * spread * 2;
-  dir.y += (Math.random() - 0.5) * spread * 2;
-  dir.normalize();
+  get canFire() { return this.cooldown <= 0 && this.ammo > 0; }
 
-  let best = null;
-  let bestAlong = COMBAT.range;
-  for (const target of targets) {
-    if (!target.alive) continue;
-    const along = rayHitsBody(origin, dir, target);
-    if (along !== null && along < bestAlong) { bestAlong = along; best = target; }
+  update(dt) {
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    this.tracerT -= dt;
+    if (this.tracerT <= 0) this.tracer.visible = false;
+    this.flash.intensity = Math.max(0, this.flash.intensity - dt * 40);
   }
-  const end = origin.clone().addScaledVector(dir, best ? bestAlong : COMBAT.range);
-  let hit = null;
-  if (best) {
-    hit = best;
-    hit.hp -= COMBAT.damage;
-    if (hit.hp <= 0) {
-      hit.alive = false;
-      if (hit.mesh) hit.mesh.visible = false;
+
+  reload() {
+    if (this.ammo === this.magSize || this.reserve <= 0) return false;
+    const need = this.magSize - this.ammo;
+    const take = Math.min(need, this.reserve);
+    this.ammo += take;
+    this.reserve -= take;
+    this.audio?.blip(660, 0.07);
+    return true;
+  }
+
+  // Fires from `origin` along `dir`. Returns {hit:'ped'|'cop'|'car'|null, target}.
+  fire(origin, dir, targets) {
+    if (!this.canFire) return { hit: null, target: null, dry: this.ammo === 0 };
+    this.ammo -= 1;
+    this.cooldown = 0.22;
+    this.audio?.gunshot();
+    this.flash.position.copy(origin).addScaledVector(dir, 1.2);
+    this.flash.intensity = 6;
+
+    this.ray.set(origin, dir);
+    this.ray.far = 70;
+    const meshes = [];
+    for (const t of targets) {
+      if (!t.obj || t.obj.dead === true) continue;
+      t.obj.traverse((m) => { if (m.isMesh) { m.userData.__target = t; meshes.push(m); } });
     }
-  }
-  addTracer(G, origin, end, 0xffd76a, 0.09);
-  // Pooled muzzle flash: a short-lived point light, reaped in updateCombat.
-  const flash = new THREE.PointLight(0xffc860, 12, 9, 1.5);
-  flash.position.copy(origin).addScaledVector(dir, 0.8);
-  G.scene.add(flash);
-  combat.flashes.push({ light: flash, life: 0.06 });
-  return { hit, end };
-}
-
-export function startReload(G) {
-  const combat = G.combat;
-  if (combat.reloading || combat.ammo === COMBAT.magSize) return;
-  combat.reloading = true;
-  combat.reloadTimer = COMBAT.reloadSeconds;
-  G.sound.reload();
-}
-
-export function updateCombat(G, dt) {
-  const combat = G.combat;
-  if (combat.fireTimer > 0) combat.fireTimer -= dt;
-  combat.bloom = Math.max(0, combat.bloom - dt * COMBAT.spreadDecay);
-  if (combat.reloading) {
-    combat.reloadTimer -= dt;
-    if (combat.reloadTimer <= 0) {
-      combat.reloading = false;
-      combat.ammo = COMBAT.magSize;
+    const hits = this.ray.intersectObjects(meshes, false);
+    let end = origin.clone().addScaledVector(dir, 70);
+    let result = { hit: null, target: null };
+    if (hits.length > 0) {
+      const h = hits[0];
+      end = h.point.clone();
+      result = { hit: h.object.userData.__target.kind, target: h.object.userData.__target.ref };
     }
-  }
-  for (let i = combat.tracers.length - 1; i >= 0; i--) {
-    const tracer = combat.tracers[i];
-    tracer.life -= dt;
-    tracer.line.material.opacity = Math.max(0, tracer.life / tracer.maxLife) * 0.9;
-    if (tracer.life <= 0) {
-      G.scene.remove(tracer.line);
-      tracer.line.geometry.dispose();
-      tracer.line.material.dispose();
-      combat.tracers.splice(i, 1);
-    }
-  }
-  for (let i = combat.flashes.length - 1; i >= 0; i--) {
-    const flash = combat.flashes[i];
-    flash.life -= dt;
-    if (flash.life <= 0) {
-      G.scene.remove(flash.light);
-      combat.flashes.splice(i, 1);
-    }
-  }
-}
-
-export function damagePlayer(G, amount) {
-  if (G.mode !== 'playing' || G.player.hp <= 0) return;
-  G.player.hp = Math.max(0, G.player.hp - amount);
-  G.hudFlash('damage');
-  if (G.player.hp <= 0) G.wasted();
-}
-
-// Rivals hold their ground, face the player, and fire in short bursts.
-export function updateRivals(G, dt) {
-  for (const rival of G.rivals) {
-    if (!rival.alive) continue;
-    const dist = Math.hypot(rival.pos.x - G.player.pos.x, rival.pos.z - G.player.pos.z);
-    if (dist >= 55 || G.mode !== 'playing') continue;
-    rival.shootTimer -= dt;
-    rival.mesh.rotation.y = Math.atan2(G.player.pos.x - rival.pos.x, G.player.pos.z - rival.pos.z);
-    if (rival.shootTimer > 0) continue;
-    rival.shootTimer = 0.9 + Math.random() * 0.7;
-    const hitChance = Math.max(0.15, 0.6 - dist * 0.008);
-    if (Math.random() < hitChance) {
-      damagePlayer(G, 9 + Math.floor(Math.random() * 7));
-      G.sound.thud();
-    } else {
-      G.sound.shot();
-    }
-    addTracer(
-      G,
-      new THREE.Vector3(rival.pos.x, 1.4, rival.pos.z),
-      new THREE.Vector3(G.player.pos.x, 1.2, G.player.pos.z),
-      0xff6a5a,
-      0.08,
-    );
+    const pos = this.tracer.geometry.attributes.position;
+    pos.setXYZ(0, origin.x, origin.y, origin.z);
+    pos.setXYZ(1, end.x, end.y, end.z);
+    pos.needsUpdate = true;
+    this.tracer.visible = true;
+    this.tracerT = 0.07;
+    return result;
   }
 }
