@@ -1,7 +1,8 @@
-// EMBERLINE — audio.js (round 3 re-author)
+// EMBERLINE — audio.js (round 3 redo)
 // Every sound is synthesised live with WebAudio — no audio files, no
-// network. One-shots are short oscillator/noise envelopes; the engine,
-// siren and the DOCK FM radio loop run as persistent nodes.
+// network. One-shots are short oscillator/noise envelopes built on a
+// single _blip helper; the engine, siren and the DOCK FM radio loop run
+// as persistent nodes.
 export class SoundEngine {
   constructor() {
     this.ctx = null;
@@ -42,9 +43,10 @@ export class SoundEngine {
     return buffer;
   }
 
-  _tone(freq, dur, type = 'sine', vol = 0.2, slideTo = 0) {
+  // One envelope-shaped oscillator voice.
+  _blip({ freq, dur, type = 'sine', vol = 0.2, slideTo = 0, delay = 0 }) {
     if (!this.ready) return;
-    const t = this.ctx.currentTime;
+    const t = this.ctx.currentTime + delay;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = type;
@@ -57,7 +59,7 @@ export class SoundEngine {
     osc.stop(t + dur + 0.02);
   }
 
-  _noiseBurst(dur, vol, filterFreq, type = 'lowpass') {
+  _burst({ dur, vol, filterFreq, type = 'lowpass' }) {
     if (!this.ready) return;
     const t = this.ctx.currentTime;
     const source = this.ctx.createBufferSource();
@@ -73,21 +75,37 @@ export class SoundEngine {
     source.stop(t + dur + 0.02);
   }
 
-  _sequence(freqs, stepMs, type, vol, dur) {
-    freqs.forEach((f, i) => setTimeout(() => this._tone(f, dur, type, vol), i * stepMs));
+  _arp(freqs, stepMs, type, vol, dur) {
+    freqs.forEach((f, i) => this._blip({ freq: f, dur, type, vol, delay: (i * stepMs) / 1000 }));
   }
 
-  shot() { this._noiseBurst(0.16, 0.5, 1800, 'highpass'); this._tone(160, 0.1, 'square', 0.25, 60); }
-  dryClick() { this._tone(1200, 0.05, 'square', 0.12); }
-  reload() { this._tone(500, 0.06, 'square', 0.15); setTimeout(() => this._tone(700, 0.06, 'square', 0.15), 120); }
-  chime() { this._sequence([523, 659, 784], 90, 'sine', 0.22, 0.22); }
-  cash() { this._sequence([880, 1174, 1568], 70, 'triangle', 0.2, 0.16); }
-  thud() { this._noiseBurst(0.12, 0.4, 300); this._tone(90, 0.12, 'sine', 0.3, 45); }
-  crash() { this._noiseBurst(0.35, 0.55, 500); this._tone(70, 0.3, 'sine', 0.35, 35); }
-  door() { this._noiseBurst(0.08, 0.25, 900); }
-  horn() { this._tone(370, 0.28, 'square', 0.12); this._tone(466, 0.28, 'square', 0.1); }
-  busted() { this._sequence([392, 330, 262], 220, 'sawtooth', 0.16, 0.35); }
-  missionStart() { this._sequence([262, 392, 523], 100, 'triangle', 0.2, 0.2); }
+  shot() {
+    this._burst({ dur: 0.16, vol: 0.5, filterFreq: 1800, type: 'highpass' });
+    this._blip({ freq: 160, dur: 0.1, type: 'square', vol: 0.25, slideTo: 60 });
+  }
+  dryClick() { this._blip({ freq: 1200, dur: 0.05, type: 'square', vol: 0.12 }); }
+  reload() {
+    this._blip({ freq: 500, dur: 0.06, type: 'square', vol: 0.15 });
+    this._blip({ freq: 700, dur: 0.06, type: 'square', vol: 0.15, delay: 0.12 });
+  }
+  chime() { this._arp([523, 659, 784], 90, 'sine', 0.22, 0.22); }
+  cash() { this._arp([880, 1174, 1568], 70, 'triangle', 0.2, 0.16); }
+  thud() {
+    this._burst({ dur: 0.12, vol: 0.4, filterFreq: 300 });
+    this._blip({ freq: 90, dur: 0.12, vol: 0.3, slideTo: 45 });
+  }
+  crash() {
+    this._burst({ dur: 0.35, vol: 0.55, filterFreq: 500 });
+    this._blip({ freq: 70, dur: 0.3, vol: 0.35, slideTo: 35 });
+  }
+  door() { this._burst({ dur: 0.08, vol: 0.25, filterFreq: 900 }); }
+  horn() {
+    this._blip({ freq: 370, dur: 0.28, type: 'square', vol: 0.12 });
+    this._blip({ freq: 466, dur: 0.28, type: 'square', vol: 0.1 });
+  }
+  busted() { this._arp([392, 330, 262], 220, 'sawtooth', 0.16, 0.35); }
+  missionStart() { this._arp([262, 392, 523], 100, 'triangle', 0.2, 0.2); }
+  step() { this._burst({ dur: 0.05, vol: 0.12, filterFreq: 400 }); }
 
   engineStart() {
     if (!this.ready || this.engineOsc) return;
@@ -138,22 +156,28 @@ export class SoundEngine {
     if (this.sirenOsc) { try { this.sirenOsc.stop(); } catch (e) { /* noop */ } this.sirenOsc = null; }
   }
 
-  // DOCK FM: a lazy minor-key synth loop — bass pulse, hat ticks, soft pad.
+  // DOCK FM: a lazy minor-key synth loop — bass pulse, hat ticks, soft pad,
+  // and a two-note chord stab every other bar.
   musicStart() {
     if (!this.ready || this.musicTimer || !this.musicOn) return;
     const bassline = [
       55, 0, 55, 0, 65.4, 0, 55, 0, 49, 0, 49, 0, 58.3, 0, 65.4, 0,
       55, 0, 55, 0, 65.4, 0, 55, 0, 82.4, 0, 73.4, 0, 65.4, 0, 58.3, 0,
     ];
+    const stabChords = [[220, 261.6], [196, 246.9], [174.6, 220], [196, 261.6]];
     const stepDur = 60 / 96 / 4;
     this.musicTimer = setInterval(() => {
       if (!this.ctx || !this.musicOn) return;
       const step = this.musicStep;
       const freq = bassline[step % bassline.length];
-      if (freq) this._tone(freq, stepDur * 0.95, 'triangle', 0.16);
-      if (step % 4 === 2) this._noiseBurst(0.03, 0.05, 6000, 'highpass');
-      if (step % 32 === 0) this._tone(220, 1.6, 'sine', 0.05);
-      if (step % 32 === 16) this._tone(261.6, 1.6, 'sine', 0.05);
+      if (freq) this._blip({ freq, dur: stepDur * 0.95, type: 'triangle', vol: 0.16 });
+      if (step % 4 === 2) this._burst({ dur: 0.03, vol: 0.05, filterFreq: 6000, type: 'highpass' });
+      if (step % 32 === 0) this._blip({ freq: 220, dur: 1.6, vol: 0.05 });
+      if (step % 32 === 16) this._blip({ freq: 261.6, dur: 1.6, vol: 0.05 });
+      if (step % 64 === 32) {
+        const chord = stabChords[Math.floor(step / 64) % stabChords.length];
+        for (const f of chord) this._blip({ freq: f, dur: 0.5, type: 'sawtooth', vol: 0.04 });
+      }
       this.musicStep++;
     }, stepDur * 1000);
   }

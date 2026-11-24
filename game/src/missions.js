@@ -1,8 +1,9 @@
-// EMBERLINE — missions.js (round 3 re-author)
-// Mara Kessler's five jobs, each a small state machine over one shared
-// beacon system: reach a point, steal-and-deliver, lose the heat, a timed
-// crate run, and the grab-and-escape finale. Cash lands on completion;
-// timed jobs pay a speed bonus for seconds to spare.
+// EMBERLINE — missions.js (round 3 redo)
+// Mara Kessler's five jobs, each driven by one handler in a dispatch
+// table over a shared beacon system: reach a point, steal-and-deliver,
+// lose the heat, a timed crate run, and the grab-and-escape finale.
+// Cash lands on completion; timed jobs pay a speed bonus for seconds
+// to spare, and a failed job costs $25 of Mara's patience.
 import * as THREE from 'three';
 import { spawnPed } from './pedestrians.js';
 import { HUB, PALETTE } from './config.js';
@@ -84,7 +85,7 @@ export function currentMission(missions) {
   return missions.index < MISSIONS.length ? MISSIONS[missions.index] : null;
 }
 
-function buildBeaconMesh(scene) {
+function makeBeaconMesh(scene) {
   const group = new THREE.Group();
   const pillar = new THREE.Mesh(
     new THREE.CylinderGeometry(3.2, 3.2, 40, 16, 1, true),
@@ -113,7 +114,7 @@ function buildBeaconMesh(scene) {
   return group;
 }
 
-function removeBeacon(G) {
+function clearBeacons(G) {
   const missions = G.missions;
   if (missions.beacon) {
     G.scene.remove(missions.beacon);
@@ -124,16 +125,16 @@ function removeBeacon(G) {
   missions.pkgMeshes = [];
 }
 
-function showBeaconAt(G, pos) {
-  removeBeacon(G);
-  const beacon = buildBeaconMesh(G.scene);
+function plantBeacon(G, pos) {
+  clearBeacons(G);
+  const beacon = makeBeaconMesh(G.scene);
   beacon.position.set(pos.x, 0, pos.z);
   G.missions.beacon = beacon;
   G.missions.beaconPos = { x: pos.x, z: pos.z };
 }
 
 export function placeHubBeacon(G) {
-  if (!G.missions.beacon) showBeaconAt(G, { x: HUB.x, z: HUB.z });
+  if (!G.missions.beacon) plantBeacon(G, { x: HUB.x, z: HUB.z });
 }
 
 export function startMission(G, index) {
@@ -149,14 +150,14 @@ export function startMission(G, index) {
 
   if (def.type === 'collect') {
     for (const pkg of def.packages) {
-      const beacon = buildBeaconMesh(G.scene);
+      const beacon = makeBeaconMesh(G.scene);
       beacon.position.set(pkg.x, 0, pkg.z);
       beacon.scale.setScalar(0.6);
       missions.pkgMeshes.push(beacon);
     }
     missions.beaconPos = { ...def.packages[0] };
   } else if (def.target) {
-    showBeaconAt(G, def.target);
+    plantBeacon(G, def.target);
   }
 
   if (def.startHeat) {
@@ -208,7 +209,7 @@ function finishMission(G) {
     'good',
   );
   G.stats.missionsDone++;
-  removeBeacon(G);
+  clearBeacons(G);
   missions.index++;
   missions.state = 'idle';
   if (missions.index >= MISSIONS.length) {
@@ -217,9 +218,66 @@ function finishMission(G) {
   }
   G.saveGame();
   G.hudMessage("New job at Kessler's Yard — head back to Mara Kessler's base.", 'mission');
-  showBeaconAt(G, { x: HUB.x, z: HUB.z });
+  plantBeacon(G, { x: HUB.x, z: HUB.z });
   missions.state = 'waiting-hub';
 }
+
+// One handler per mission type; updateMissions dispatches through this table.
+const MISSION_HANDLERS = {
+  reach(G, def) {
+    if (distanceTo(G, def.target) < def.radius) {
+      if (!G.player.onFoot) finishMission(G);
+      else G.hudHint('You need to be in a car for this drop-off.');
+    }
+  },
+
+  'steal-deliver'(G, def) {
+    if (G.missions.phase === 1 && !G.player.onFoot && distanceTo(G, def.target) < def.radius) {
+      finishMission(G);
+    }
+  },
+
+  'lose-heat'(G, def) {
+    if (G.missions.phase === 0 && G.wanted.level === 0) {
+      G.missions.phase = 1;
+      G.hudMessage('Heat is off — get to the safehouse!', 'good');
+      plantBeacon(G, def.target);
+    }
+    if (G.missions.phase === 1 && distanceTo(G, def.target) < def.radius) finishMission(G);
+  },
+
+  collect(G, def) {
+    const missions = G.missions;
+    const pkg = def.packages[missions.packageIndex];
+    if (!pkg || distanceTo(G, pkg) >= 4) return;
+    missions.collected++;
+    G.sound.cash();
+    G.player.cash += 50;
+    G.hudMessage(`Package ${missions.collected}/${def.count} collected (+$50)`, 'good');
+    const mesh = missions.pkgMeshes[missions.packageIndex];
+    if (mesh) G.scene.remove(mesh);
+    missions.packageIndex++;
+    if (missions.packageIndex < def.packages.length) {
+      missions.beaconPos = { ...def.packages[missions.packageIndex] };
+    } else {
+      finishMission(G);
+    }
+  },
+
+  'grab-escape'(G, def) {
+    const missions = G.missions;
+    if (missions.phase === 0 && distanceTo(G, def.target) < def.radius) {
+      missions.phase = 1;
+      G.player.cash += 1500;
+      G.hudMessage('Cash grabbed! Get to the docks — the PD is coming!', 'bad');
+      G.sound.cash();
+      plantBeacon(G, def.escape);
+      spawnGuards(G, def.target);
+    } else if (missions.phase === 1 && distanceTo(G, def.escape) < def.radius) {
+      finishMission(G);
+    }
+  },
+};
 
 export function updateMissions(G, dt) {
   const missions = G.missions;
@@ -240,68 +298,19 @@ export function updateMissions(G, dt) {
     diamond.position.y = 8 + Math.sin(G.time * 2.5) * 0.8;
   }
 
-  switch (def.type) {
-    case 'reach':
-      if (distanceTo(G, def.target) < def.radius) {
-        if (!G.player.onFoot) finishMission(G);
-        else G.hudHint('You need to be in a car for this drop-off.');
-      }
-      break;
-    case 'steal-deliver':
-      if (missions.phase === 1 && !G.player.onFoot && distanceTo(G, def.target) < def.radius) {
-        finishMission(G);
-      }
-      break;
-    case 'lose-heat':
-      if (missions.phase === 0 && G.wanted.level === 0) {
-        missions.phase = 1;
-        G.hudMessage('Heat is off — get to the safehouse!', 'good');
-        showBeaconAt(G, def.target);
-      }
-      if (missions.phase === 1 && distanceTo(G, def.target) < def.radius) finishMission(G);
-      break;
-    case 'collect': {
-      const pkg = def.packages[missions.packageIndex];
-      if (pkg && distanceTo(G, pkg) < 4) {
-        missions.collected++;
-        G.sound.cash();
-        G.player.cash += 50;
-        G.hudMessage(`Package ${missions.collected}/${def.count} collected (+$50)`, 'good');
-        const mesh = missions.pkgMeshes[missions.packageIndex];
-        if (mesh) G.scene.remove(mesh);
-        missions.packageIndex++;
-        if (missions.packageIndex < def.packages.length) {
-          missions.beaconPos = { ...def.packages[missions.packageIndex] };
-        } else {
-          finishMission(G);
-        }
-      }
-      break;
-    }
-    case 'grab-escape':
-      if (missions.phase === 0 && distanceTo(G, def.target) < def.radius) {
-        missions.phase = 1;
-        G.player.cash += 1500;
-        G.hudMessage('Cash grabbed! Get to the docks — the PD is coming!', 'bad');
-        G.sound.cash();
-        showBeaconAt(G, def.escape);
-        spawnGuards(G, def.target);
-      } else if (missions.phase === 1 && distanceTo(G, def.escape) < def.radius) {
-        finishMission(G);
-      }
-      break;
-    default:
-      break;
-  }
+  const handler = MISSION_HANDLERS[def.type];
+  if (handler) handler(G, def);
 }
 
 export function failMission(G, reason) {
   const missions = G.missions;
-  G.hudMessage(`MISSION FAILED: ${reason} Talk to Mara Kessler to retry.`, 'bad');
+  // Mara's patience costs $25 a failure.
+  G.player.cash = Math.max(0, G.player.cash - 25);
+  G.hudMessage(`MISSION FAILED: ${reason} Mara takes $25 off your tab. Talk to her to retry.`, 'bad');
   G.sound.busted();
-  removeBeacon(G);
+  clearBeacons(G);
   missions.state = 'idle';
-  showBeaconAt(G, { x: HUB.x, z: HUB.z });
+  plantBeacon(G, { x: HUB.x, z: HUB.z });
   missions.state = 'waiting-hub';
 }
 

@@ -1,12 +1,12 @@
-// EMBERLINE — make.fun gta6-01 hand-in program (round 3 re-author).
+// EMBERLINE — make.fun gta6-01 hand-in program (round 3 redo).
 //
 // The game is plain static files under game/ (three.js vendored as a
 // minified build; every other file written for this entry). This program
-// is the hand-in: it copies game/ and screenshots/ into the output
-// directory (/output in the grader, MAKEFUN_OUTPUT_DIR anywhere else)
-// and writes dossier.json with the kit's vendored library, exactly the
-// way the scorer rebuilds it. Node 22 standard library only.
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+// is the hand-in: it walks game/ and screenshots/ file by file into the
+// output directory (/output in the grader, MAKEFUN_OUTPUT_DIR anywhere
+// else) and writes dossier.json with the kit's vendored library, exactly
+// the way the scorer rebuilds it. Node 22 standard library only.
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -24,20 +24,32 @@ const SCORER_CAPS = {
   game_path_max_bytes: 1000,
 };
 
+// Recursive copy that skips nothing and reports how many files landed.
 function copyTree(from, to) {
-  mkdirSync(to, { recursive: true });
-  cpSync(from, to, { recursive: true });
+  let copied = 0;
+  const walk = (srcDir, dstDir) => {
+    mkdirSync(dstDir, { recursive: true });
+    for (const entry of readdirSync(srcDir)) {
+      const src = join(srcDir, entry);
+      const dst = join(dstDir, entry);
+      if (statSync(src).isDirectory()) walk(src, dst);
+      else { copyFileSync(src, dst); copied++; }
+    }
+  };
+  walk(from, to);
+  return copied;
 }
 
 mkdirSync(outputDir, { recursive: true });
-copyTree(join(repoRoot, 'game'), join(outputDir, 'game'));
+const gameFiles = copyTree(join(repoRoot, 'game'), join(outputDir, 'game'));
 
+let shotFiles = 0;
 const screenshotsFrom = join(repoRoot, 'screenshots');
 if (existsSync(screenshotsFrom)) {
-  copyTree(screenshotsFrom, join(outputDir, 'screenshots'));
+  shotFiles = copyTree(screenshotsFrom, join(outputDir, 'screenshots'));
 } else {
   mkdirSync(join(outputDir, 'screenshots'), { recursive: true });
 }
 
 writeFileSync(join(outputDir, 'dossier.json'), buildDossier(outputDir, SCORER_CAPS));
-console.log('EMBERLINE handed in: game + screenshots copied, dossier written to', outputDir);
+console.log(`EMBERLINE handed in: ${gameFiles} game files + ${shotFiles} screenshots copied, dossier written to ${outputDir}`);

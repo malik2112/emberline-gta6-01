@@ -15,41 +15,53 @@
   html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--font)}
   #game,#game canvas{position:fixed;inset:0;display:block}
   #hud{position:fixed;inset:0;pointer-events:none;display:none}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:7px}
+  .mono{font-family:var(--mono)}
+
+  /* full-screen damage / bust / good flash */
   #flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .12s}
   #flash.on{opacity:1}
   #flash.on.damage{background:radial-gradient(ellipse at center, transparent 52%, rgba(255,40,30,.48))}
   #flash.on.bust{background:rgba(60,80,255,.18)}
   #flash.on.good{background:radial-gradient(ellipse at center, transparent 58%, rgba(80,255,140,.28))}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:7px}
-  /* cash + health, top-left */
+
+  /* top-left: cash, health, stamina, feed */
   #topleft{position:fixed;left:16px;top:12px;display:flex;flex-direction:column;gap:8px}
   #cash{font-family:var(--mono);font-size:26px;font-weight:700;color:var(--gold);padding:6px 14px}
-  #hpwrap{display:flex;align-items:center;gap:8px;padding:6px 12px;font-family:var(--mono)}
-  #hpwrap .lbl{font-size:11px;color:var(--dim);letter-spacing:.14em}
-  #hpnum{font-size:20px;font-weight:700}
-  #hpbar{width:130px;height:8px;background:#26313d;border-radius:4px;overflow:hidden}
-  #hpfill{height:100%;background:var(--green);width:100%;transition:width .25s}
+  .meter{display:flex;align-items:center;gap:8px;padding:6px 12px;font-family:var(--mono)}
+  .meter .lbl{font-size:11px;color:var(--dim);letter-spacing:.14em}
+  .meter .num{font-size:20px;font-weight:700}
+  .meter .bar{width:130px;height:8px;background:#26313d;border-radius:4px;overflow:hidden}
+  .meter .fill{height:100%;width:100%;transition:width .25s}
+  #hpfill{background:var(--green)}
+  #stamfill{background:var(--cyan)}
+  #stamwrap{transition:opacity .3s}
   #feed{display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px;max-width:360px}
   #feed div{padding:4px 9px;border-radius:4px;background:var(--panel);border:1px solid var(--line)}
   #feed div.bad{border-left:3px solid var(--red);color:#ffb3ad}
   #feed div.good{border-left:3px solid var(--green);color:#c8f5d6}
   #feed div.mission{border-left:3px solid var(--gold);color:#ffe9a8}
   #feed div.info{color:var(--dim)}
-  /* clock + radio, top-centre */
+
+  /* top-centre: clock, compass, radio */
   #topmid{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center}
   #clock{font-family:var(--mono);font-size:17px;padding:6px 12px}
+  #compass{font-family:var(--mono);font-size:12px;color:var(--ink);padding:6px 12px;letter-spacing:.08em}
   #radio{font-family:var(--mono);font-size:12px;color:var(--cyan);padding:6px 12px}
-  /* stars + minimap, top-right */
+
+  /* top-right: stars, minimap, district */
   #topright{position:fixed;right:16px;top:12px;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
   #stars{font-size:26px;letter-spacing:4px;padding:4px 12px}
   #stars .star{color:#3a4552}
   #stars .star.on{color:var(--gold);text-shadow:0 0 10px rgba(255,210,58,.85)}
   #minimap{border:1px solid var(--line);border-radius:7px;background:rgba(11,16,23,.84)}
   #loc{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.12em;text-align:right}
-  /* objective, bottom-left */
+
+  /* bottom-left: objective */
   #objective{position:fixed;left:16px;bottom:18px;max-width:430px;padding:10px 14px;font-size:14px;line-height:1.45}
   #objective b{display:block;font-size:11px;letter-spacing:.16em;color:var(--gold);margin-bottom:3px}
-  /* speed + ammo + nitro, bottom-right */
+
+  /* bottom-right: speed, ammo, nitro */
   #botright{position:fixed;right:16px;bottom:18px;text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
   #speed{font-family:var(--mono);font-size:44px;line-height:1;font-weight:700}
   #speedlabel{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.16em}
@@ -57,7 +69,8 @@
   #boostwrap{padding:6px 10px;opacity:0;transition:opacity .3s}
   #boostbar{width:150px;height:8px;background:#26313d;border-radius:4px;overflow:hidden}
   #boostfill{height:100%;background:var(--orange);width:100%}
-  /* centre hints + crosshair */
+
+  /* centre: hint, crosshair, bust banner, briefing card */
   #hint{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);font-family:var(--mono);font-size:14px;padding:8px 16px;opacity:0;transition:opacity .3s;background:var(--panel);border:1px solid var(--line);border-radius:7px}
   #crosshair{position:fixed;left:50%;top:50%;width:20px;height:20px;transform:translate(-50%,-50%);display:none}
   #crosshair i{position:absolute;background:var(--ink);opacity:.9}
@@ -66,12 +79,12 @@
   #crosshair i:nth-child(3){top:9px;left:0;height:2px;width:6px}
   #crosshair i:nth-child(4){top:9px;right:0;height:2px;width:6px}
   #bustbar{position:fixed;left:50%;top:22%;transform:translateX(-50%);font-family:var(--mono);font-size:22px;color:#9ab4ff;opacity:0;letter-spacing:.2em;transition:opacity .15s}
-  /* mission briefing card */
   #briefing{position:fixed;left:50%;top:70px;transform:translateX(-50%);width:min(560px,92vw);padding:16px 20px;display:none}
   #briefing.show{display:block}
   #brief-title{font-size:16px;color:var(--gold);letter-spacing:.06em;margin-bottom:6px}
   #brief-text{font-size:14px;line-height:1.5;color:var(--ink)}
-  /* full-screen overlays */
+
+  /* full-screen overlays: menu, pause, end */
   .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(7,11,17,.72);z-index:10}
   #menu{background:linear-gradient(180deg, rgba(7,11,17,.5), rgba(7,11,17,.86));flex-direction:column;text-align:center;padding:20px}
   #menu h1{font-size:min(72px,11vw);margin:0;letter-spacing:.06em;color:var(--gold);text-shadow:0 4px 30px rgba(255,150,40,.5)}
@@ -96,11 +109,13 @@
 <div id="hud">
   <div id="topleft">
     <div id="cash" class="panel">$50</div>
-    <div id="hpwrap" class="panel"><span class="lbl">HEALTH</span><span id="hpnum">100</span><div id="hpbar"><div id="hpfill"></div></div></div>
+    <div id="hpwrap" class="panel meter"><span class="lbl">HEALTH</span><span id="hpnum" class="num">100</span><div class="bar"><div id="hpfill" class="fill"></div></div></div>
+    <div id="stamwrap" class="panel meter"><span class="lbl">SPRINT</span><div class="bar"><div id="stamfill" class="fill"></div></div></div>
     <div id="feed"></div>
   </div>
   <div id="topmid">
     <div id="clock" class="panel">17:48</div>
+    <div id="compass" class="panel">N 000°</div>
     <div id="radio" class="panel">♪ DOCK FM 101.3</div>
   </div>
   <div id="topright">

@@ -1,4 +1,4 @@
-// EMBERLINE — main.js (round 3 re-author)
+// EMBERLINE — main.js (round 3 redo)
 // The conductor: boots the renderer, owns the fixed-step game loop,
 // translates keyboard/mouse into input, handles car entry, and runs the
 // busted / wasted / story-complete flows. Every system lives in its own
@@ -11,10 +11,10 @@ import {
 import { buildCity, streetCenters, collideCircle } from './city.js';
 import { SoundEngine } from './audio.js';
 import { createPlayer, updatePlayerOnFoot, updateCamera, menuCamera } from './player.js';
-import { spawnCar, updateTrafficCar, updatePlayerCar, randomCarColor } from './vehicles.js';
+import { spawnCar, updateTrafficCar, updatePlayerCar, randomCarColor, initVehicleFx, updateVehicleFx } from './vehicles.js';
 import { spawnPed, updatePed, updateFallenPed, randomSidewalkPoint } from './pedestrians.js';
 import { createCombat, fireWeapon, startReload, updateCombat, updateRivals, damagePlayer } from './combat.js';
-import { createWanted, addHeat, updateWanted, updatePolice, clearWanted } from './wanted.js';
+import { createWanted, addHeat, updateWanted, updatePolice, clearWanted, checkSpeeding } from './wanted.js';
 import { createMissions, updateMissions, updateHub, startMission, onPlayerEnterCar, placeHubBeacon } from './missions.js';
 import { createHud, addFeedMessage, showHint, flashScreen, updateHud } from './hud.js';
 import { saveGame, loadSave, applySave, hasSave } from './save.js';
@@ -24,22 +24,28 @@ import { runSelfTest } from './selftest.js';
 const query = new URLSearchParams(location.search);
 const SHOT = query.get('shot');
 const SELFTEST = query.get('selftest') === '1';
+const STEP = 1 / 60;
 
-const G = {
-  scene: null, camera: null, renderer: null,
-  mode: 'menu', // menu | playing | paused | busted | wasted | complete
-  time: 0,
-  player: null, cars: [], peds: [], rivals: [],
-  city: null, wanted: null, combat: null, missions: null, hud: null,
-  sound: new SoundEngine(),
-  input: { up: false, down: false, left: false, right: false, run: false, handbrake: false },
-  shotInput: null,
-  shotMode: false,
-  mouseDX: 0, mouseDY: 0,
-  dangerPos: null, dangerTimer: 0,
-  stats: { missionsDone: 0, carsStolen: 0, shotsFired: 0 },
-  rngSeed: 20261118,
-};
+function createGameState() {
+  return {
+    scene: null, camera: null, renderer: null,
+    mode: 'menu', // menu | playing | paused | busted | wasted | complete
+    time: 0,
+    player: null, cars: [], peds: [], rivals: [],
+    city: null, wanted: null, combat: null, missions: null, hud: null,
+    sound: new SoundEngine(),
+    input: { up: false, down: false, left: false, right: false, run: false, handbrake: false },
+    shotInput: null,
+    shotMode: false,
+    mouseDX: 0, mouseDY: 0,
+    dangerPos: null, dangerTimer: 0,
+    kick: 0,
+    stats: { missionsDone: 0, carsStolen: 0, shotsFired: 0, bestCash: 50 },
+    rngSeed: 20261124,
+  };
+}
+
+const G = createGameState();
 window.__game = G;
 
 // ---------- bridges the systems call back through ----------
@@ -74,6 +80,9 @@ function respawnAtYard() {
   const player = G.player;
   player.hp = 100;
   player.bustMeter = 0;
+  player.stamina = 100;
+  player.sprintLocked = false;
+  G.kick = 0;
   if (player.car) G.exitCar(true);
   player.pos.set(HUB.x + 6, 0, HUB.z - 18);
   player.yaw = Math.PI * 0.75;
@@ -179,7 +188,10 @@ G.startGame = (fresh) => {
   if (fresh) {
     G.player.cash = 50;
     G.player.hp = 100;
-    G.stats = { missionsDone: 0, carsStolen: 0, shotsFired: 0 };
+    G.player.stamina = 100;
+    G.player.sprintLocked = false;
+    G.kick = 0;
+    G.stats = { missionsDone: 0, carsStolen: 0, shotsFired: 0, bestCash: 50 };
     G.missions.index = 0;
     G.missions.state = 'waiting-hub';
     G.player.pos.set(HUB.x + 6, 0, HUB.z - 6);
@@ -246,7 +258,7 @@ function updateAmbient(dt) {
   }
   for (const ped of G.peds) {
     if (ped.alive) {
-      if (ped.kind !== 'rival') updatePed(ped, G.city.centers, Math.random, dt, G._danger || null, G.city.colliders);
+      if (ped.kind !== 'rival') updatePed(ped, G.city.centers, Math.random, dt, G._danger || null, G.city.colliders, G.cars);
     } else {
       updateFallenPed(ped, dt);
     }
@@ -260,6 +272,11 @@ function simulate(dt) {
 
   if (G.player.onFoot) {
     updatePlayerOnFoot(G.player, input, dt, G.city.colliders);
+    // Footstep ticks, one per ~2.2m walked.
+    if (G.player.stepAccum > 2.2) {
+      G.player.stepAccum = 0;
+      if (G.sound.ready && G.player.speed > 1) G.sound.step();
+    }
   } else if (G.player.car) {
     updatePlayerCar(G.player.car, input, dt, G.city.colliders, G.cars, (force) => {
       G.sound.crash();
@@ -269,8 +286,10 @@ function simulate(dt) {
   }
 
   updateAmbient(dt);
+  updateVehicleFx(G, dt);
   updatePolice(G, dt);
   updateWanted(G, dt);
+  checkSpeeding(G, dt);
   updateMissions(G, dt);
   updateHub(G);
   updateCombat(G, dt);
@@ -280,6 +299,9 @@ function simulate(dt) {
   if (G.dangerTimer > 0) G.dangerTimer -= dt;
   G._danger = G.dangerTimer > 0 ? G.dangerPos : null;
 
+  // Track the best cash ever held for the save record.
+  if (G.player.cash > G.stats.bestCash) G.stats.bestCash = G.player.cash;
+
   // Slow health regen, only while nobody is looking for you.
   if (G.wanted.level === 0 && G.player.hp > 0 && G.player.hp < 100) {
     G.player.hp = Math.min(100, G.player.hp + dt * 2);
@@ -288,7 +310,6 @@ function simulate(dt) {
 
 let lastTimestamp = 0;
 let accumulator = 0;
-const STEP = 1 / 60;
 
 function tick(timestamp) {
   const frameDt = Math.min(0.05, (timestamp - lastTimestamp) / 1000 || STEP);
@@ -319,63 +340,16 @@ function tick(timestamp) {
   }
   if (steps === 4) accumulator = 0; // drop backlog instead of spiralling
 
-  updateCamera(G.camera, G.player, frameDt, mouseDX, mouseDY);
+  // Camera kick from the last shot decays fast.
+  const kick = G.kick;
+  G.kick = Math.max(0, G.kick - frameDt * 0.25);
+  updateCamera(G.camera, G.player, frameDt, mouseDX, mouseDY, kick);
   updateHud(G, frameDt);
   G.renderer.render(G.scene, G.camera);
 }
 
-// ---------- boot ----------
-function boot() {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-  document.getElementById('game').appendChild(renderer.domElement);
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(PALETTE.sky);
-  scene.fog = new THREE.Fog(PALETTE.fog, CITY.fogNear, CITY.fogFar);
-  const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 900);
-  camera.position.set(-160, 40, 220);
-  G.scene = scene;
-  G.camera = camera;
-  G.renderer = renderer;
-
-  const sun = new THREE.DirectionalLight(PALETTE.sun, CITY.sunIntensity);
-  sun.position.set(120, 180, 60);
-  scene.add(sun);
-  scene.add(new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, 1.1));
-
-  G.city = buildCity(scene);
-  G.player = createPlayer(scene);
-  G.wanted = createWanted();
-  G.combat = createCombat();
-  G.missions = createMissions();
-  G.hud = createHud();
-
-  // Ambient traffic cruising the road graph.
-  const centers = streetCenters();
-  for (let i = 0; i < 12; i++) {
-    const node = G.city.nodes[Math.floor(Math.random() * G.city.nodes.length)];
-    const car = spawnCar(scene, node.x, node.z, Math.random() * Math.PI * 2, randomCarColor(Math.random), 'traffic');
-    car.target = G.city.nodes[Math.floor(Math.random() * G.city.nodes.length)];
-    G.cars.push(car);
-  }
-  // Mara's own car by the yard — taking it costs no heat.
-  const yardCar = spawnCar(scene, -168, 176, Math.PI * 0.5, 0xc23b2e, 'traffic');
-  yardCar.owned = true;
-  yardCar.parked = true;
-  G.cars.push(yardCar);
-  for (const [x, z, yaw] of [[40, 76, 0], [-100, -64, 3.14159], [140, 16, 1.5708], [-30, 150, 0]]) {
-    const parked = spawnCar(scene, x, z, yaw, randomCarColor(Math.random), 'traffic');
-    parked.parked = true;
-    G.cars.push(parked);
-  }
-  for (let i = 0; i < 16; i++) {
-    const pt = randomSidewalkPoint(centers, Math.random);
-    G.peds.push(spawnPed(scene, pt.x, pt.z, Math.random));
-  }
-
-  // Menu wiring.
+// ---------- menu + input wiring ----------
+function wireMenu() {
   document.getElementById('btn-start').onclick = () => G.startGame(true);
   const continueButton = document.getElementById('btn-continue');
   if (hasSave()) {
@@ -399,7 +373,19 @@ function boot() {
     document.getElementById('hud').style.display = 'none';
   };
 
-  // Input.
+  // Menu copy.
+  document.getElementById('menu-title').textContent = GAME_TITLE;
+  document.getElementById('menu-sub').textContent = GAME_SUBTITLE;
+  document.getElementById('menu-story').textContent = STORY.intro;
+  const controlsBox = document.getElementById('controls');
+  for (const [key, desc] of CONTROLS) {
+    const row = document.createElement('div');
+    row.innerHTML = `<b>${key}</b><span>${desc}</span>`;
+    controlsBox.appendChild(row);
+  }
+}
+
+function wireInput() {
   const keyMap = {
     KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down',
     KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
@@ -431,7 +417,7 @@ function boot() {
     if (mapped) G.input[mapped] = false;
   });
 
-  const canvas = renderer.domElement;
+  const canvas = G.renderer.domElement;
   canvas.addEventListener('click', () => {
     if (G.mode !== 'playing' || G.shotMode || SELFTEST) return;
     if (document.pointerLockElement !== canvas) {
@@ -453,21 +439,65 @@ function boot() {
     }
   });
   window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    G.camera.aspect = window.innerWidth / window.innerHeight;
+    G.camera.updateProjectionMatrix();
+    G.renderer.setSize(window.innerWidth, window.innerHeight);
   });
+}
 
-  // Menu copy.
-  document.getElementById('menu-title').textContent = GAME_TITLE;
-  document.getElementById('menu-sub').textContent = GAME_SUBTITLE;
-  document.getElementById('menu-story').textContent = STORY.intro;
-  const controlsBox = document.getElementById('controls');
-  for (const [key, desc] of CONTROLS) {
-    const row = document.createElement('div');
-    row.innerHTML = `<b>${key}</b><span>${desc}</span>`;
-    controlsBox.appendChild(row);
+// ---------- boot ----------
+function boot() {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+  document.getElementById('game').appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(PALETTE.sky);
+  scene.fog = new THREE.Fog(PALETTE.fog, CITY.fogNear, CITY.fogFar);
+  const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 900);
+  camera.position.set(-160, 40, 220);
+  G.scene = scene;
+  G.camera = camera;
+  G.renderer = renderer;
+
+  const sun = new THREE.DirectionalLight(PALETTE.sun, CITY.sunIntensity);
+  sun.position.set(120, 180, 60);
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, 1.1));
+
+  G.city = buildCity(scene);
+  G.player = createPlayer(scene);
+  G.wanted = createWanted();
+  G.combat = createCombat();
+  G.missions = createMissions();
+  G.hud = createHud();
+  initVehicleFx(scene);
+
+  // Ambient traffic cruising the road graph.
+  for (let i = 0; i < 12; i++) {
+    const node = G.city.nodes[Math.floor(Math.random() * G.city.nodes.length)];
+    const car = spawnCar(scene, node.x, node.z, Math.random() * Math.PI * 2, randomCarColor(Math.random), 'traffic');
+    car.target = G.city.nodes[Math.floor(Math.random() * G.city.nodes.length)];
+    G.cars.push(car);
   }
+  // Mara's own car by the yard — taking it costs no heat.
+  const yardCar = spawnCar(scene, -168, 176, Math.PI * 0.5, 0xc23b2e, 'traffic');
+  yardCar.owned = true;
+  yardCar.parked = true;
+  G.cars.push(yardCar);
+  for (const [x, z, yaw] of [[40, 76, 0], [-100, -64, 3.14159], [140, 16, 1.5708], [-30, 150, 0]]) {
+    const parked = spawnCar(scene, x, z, yaw, randomCarColor(Math.random), 'traffic');
+    parked.parked = true;
+    G.cars.push(parked);
+  }
+  for (let i = 0; i < 16; i++) {
+    const pt = randomSidewalkPoint(streetCenters(), Math.random);
+    G.peds.push(spawnPed(scene, pt.x, pt.z, Math.random));
+  }
+
+  wireMenu();
+  wireInput();
 
   if (SHOT) applyShot(G, SHOT);
   if (SELFTEST) setTimeout(() => runSelfTest(G), 1500);

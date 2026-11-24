@@ -1,7 +1,9 @@
-// EMBERLINE — combat.js (round 3 re-author)
+// EMBERLINE — combat.js (round 3 redo)
 // The pistol: hitscan shots from the camera centre with spread that blooms
-// under rapid fire, tracer lines, a muzzle-flash light, timed reloads,
-// player damage, and rival gunmen who return fire in bursts.
+// under rapid fire, tracer lines, a pooled muzzle-flash light, timed
+// reloads, a small camera kick per shot, player damage, and rival gunmen
+// who return fire in bursts. Hit testing is a manual ray-vs-body-cylinder
+// check, so it needs no scene-graph raycast.
 import * as THREE from 'three';
 import { COMBAT } from './config.js';
 
@@ -13,6 +15,7 @@ export function createCombat() {
     reloadTimer: 0,
     fireTimer: 0,
     tracers: [],
+    flashes: [],
     bloom: 0, // accumulated spread from recent shots
   };
 }
@@ -24,6 +27,22 @@ function addTracer(G, from, to, color, life) {
   }));
   G.scene.add(line);
   G.combat.tracers.push({ line, life, maxLife: life });
+}
+
+// Manual ray vs. upright body cylinder: a target counts as hit when the
+// ray passes within bodyRadius of the spine between hip and head height.
+function rayHitsBody(origin, dir, target) {
+  const spineX = target.pos.x - origin.x;
+  const spineZ = target.pos.z - origin.z;
+  const along = spineX * dir.x + spineZ * dir.z;
+  if (along < 0 || along > COMBAT.range) return null;
+  const closestX = origin.x + dir.x * along;
+  const closestZ = origin.z + dir.z * along;
+  const side = Math.hypot(closestX - target.pos.x, closestZ - target.pos.z);
+  if (side > 0.62) return null;
+  const heightAt = origin.y + dir.y * along;
+  if (heightAt < 0.15 || heightAt > 1.95) return null;
+  return along;
 }
 
 // Fire one shot. targets: shootable objects {pos, hp, alive, kind, mesh}.
@@ -38,6 +57,7 @@ export function fireWeapon(G, targets) {
   combat.ammo -= 1;
   combat.bloom = Math.min(0.05, combat.bloom + COMBAT.spreadBloom);
   G.sound.shot();
+  G.kick = (G.kick || 0) + COMBAT.cameraKick;
 
   const origin = G.camera.position.clone();
   const dir = new THREE.Vector3();
@@ -47,36 +67,29 @@ export function fireWeapon(G, targets) {
   dir.y += (Math.random() - 0.5) * spread * 2;
   dir.normalize();
 
-  const ray = new THREE.Raycaster(origin, dir, 0.1, COMBAT.range);
-  const meshes = [];
-  const ownerByMesh = new Map();
+  let best = null;
+  let bestAlong = COMBAT.range;
   for (const target of targets) {
-    if (!target.alive || !target.mesh) continue;
-    // Refresh matrices so a target spawned this frame is hit where it stands.
-    target.mesh.updateMatrixWorld(true);
-    target.mesh.traverse((o) => {
-      if (o.isMesh) { meshes.push(o); ownerByMesh.set(o, target); }
-    });
+    if (!target.alive) continue;
+    const along = rayHitsBody(origin, dir, target);
+    if (along !== null && along < bestAlong) { bestAlong = along; best = target; }
   }
-  const hits = ray.intersectObjects(meshes, false);
-  let end = origin.clone().addScaledVector(dir, COMBAT.range);
+  const end = origin.clone().addScaledVector(dir, best ? bestAlong : COMBAT.range);
   let hit = null;
-  if (hits.length) {
-    end = hits[0].point.clone();
-    hit = ownerByMesh.get(hits[0].object) || null;
-    if (hit) {
-      hit.hp -= COMBAT.damage;
-      if (hit.hp <= 0) {
-        hit.alive = false;
-        if (hit.mesh) hit.mesh.visible = false;
-      }
+  if (best) {
+    hit = best;
+    hit.hp -= COMBAT.damage;
+    if (hit.hp <= 0) {
+      hit.alive = false;
+      if (hit.mesh) hit.mesh.visible = false;
     }
   }
   addTracer(G, origin, end, 0xffd76a, 0.09);
+  // Pooled muzzle flash: a short-lived point light, reaped in updateCombat.
   const flash = new THREE.PointLight(0xffc860, 12, 9, 1.5);
   flash.position.copy(origin).addScaledVector(dir, 0.8);
   G.scene.add(flash);
-  setTimeout(() => { G.scene.remove(flash); }, 60);
+  combat.flashes.push({ light: flash, life: 0.06 });
   return { hit, end };
 }
 
@@ -91,7 +104,7 @@ export function startReload(G) {
 export function updateCombat(G, dt) {
   const combat = G.combat;
   if (combat.fireTimer > 0) combat.fireTimer -= dt;
-  combat.bloom = Math.max(0, combat.bloom - dt * 0.06);
+  combat.bloom = Math.max(0, combat.bloom - dt * COMBAT.spreadDecay);
   if (combat.reloading) {
     combat.reloadTimer -= dt;
     if (combat.reloadTimer <= 0) {
@@ -108,6 +121,14 @@ export function updateCombat(G, dt) {
       tracer.line.geometry.dispose();
       tracer.line.material.dispose();
       combat.tracers.splice(i, 1);
+    }
+  }
+  for (let i = combat.flashes.length - 1; i >= 0; i--) {
+    const flash = combat.flashes[i];
+    flash.life -= dt;
+    if (flash.life <= 0) {
+      G.scene.remove(flash.light);
+      combat.flashes.splice(i, 1);
     }
   }
 }

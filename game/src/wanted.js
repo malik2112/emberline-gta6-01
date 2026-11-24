@@ -1,9 +1,13 @@
-// EMBERLINE — wanted.js (round 3 re-author)
+// EMBERLINE — wanted.js (round 3 redo)
 // The wanted ladder: crimes add heat, Harbor PD dispatches cruisers to
 // match, and a quiet stretch with no cruiser nearby cools one star at a
-// time. On foot, sustained contact with a stopped cruiser is a bust.
+// time. Speeding past a cruiser counts too. On foot, sustained contact
+// with a stopped cruiser is a bust.
 import { WANTED } from './config.js';
 import { spawnCar, updatePoliceCar, spinWheels } from './vehicles.js';
+
+// Cruisers on the street per wanted level (index = level).
+const CRUISERS_PER_LEVEL = [0, 2, 3, 3, 4, 4];
 
 export function createWanted() {
   return {
@@ -12,6 +16,7 @@ export function createWanted() {
     bustTimer: 0,
     police: [],
     sirenOn: false,
+    speedingTimer: 0, // cooldown between speeding tickets
   };
 }
 
@@ -28,14 +33,10 @@ export function addHeat(G, amount, reason) {
   syncPolice(G);
 }
 
-function cruisersWanted(level) {
-  return level <= 0 ? 0 : Math.min(1 + level, 4);
-}
-
 // Keep the cruiser count matched to the wanted level.
 export function syncPolice(G) {
   const wanted = G.wanted;
-  const desired = cruisersWanted(wanted.level);
+  const desired = CRUISERS_PER_LEVEL[wanted.level] ?? 0;
   while (wanted.police.length < desired) {
     const p = G.player.pos;
     const angle = Math.random() * Math.PI * 2;
@@ -66,6 +67,19 @@ function nearestCruiserDistance(G) {
     if (d < nearest) nearest = d;
   }
   return nearest;
+}
+
+// Blowing past a cruiser at speed earns a star (with a cooldown so one
+// pass cannot stack the whole ladder).
+export function checkSpeeding(G, dt) {
+  const wanted = G.wanted;
+  if (wanted.speedingTimer > 0) wanted.speedingTimer -= dt;
+  const car = G.player.car;
+  if (!car || G.player.onFoot || wanted.speedingTimer > 0) return;
+  if (Math.abs(car.speed) * 3.6 < WANTED.speedingSpeed) return;
+  if (nearestCruiserDistance(G) > WANTED.speedingRange) return;
+  wanted.speedingTimer = WANTED.speedingCooldown;
+  addHeat(G, WANTED.heatSpeeding, 'Speeding past a cruiser');
 }
 
 export function updateWanted(G, dt) {
@@ -117,28 +131,31 @@ function shovePlayer(G, cruiser) {
   if (G.player.hp <= 0) G.wasted();
 }
 
+function updateFormationCruiser(cruiser, anchor, dt) {
+  // Screenshot staging: formation cruisers hold station beside the player.
+  const { dx, dz } = cruiser.shotFollow;
+  const sin = Math.sin(anchor.yaw);
+  const cos = Math.cos(anchor.yaw);
+  cruiser.pos.x = anchor.pos.x + cos * dx + sin * dz;
+  cruiser.pos.z = anchor.pos.z - sin * dx + cos * dz;
+  cruiser.yaw = anchor.yaw;
+  cruiser.speed = anchor.speed || 0;
+  cruiser.mesh.position.copy(cruiser.pos);
+  cruiser.mesh.rotation.y = cruiser.yaw;
+  spinWheels(cruiser, dt);
+  cruiser.flashT += dt * 6;
+  if (cruiser.lightBar) {
+    const redOn = Math.sin(cruiser.flashT) > 0;
+    cruiser.lightBar.red.material.color.setHex(redOn ? 0xff2222 : 0x551111);
+    cruiser.lightBar.blue.material.color.setHex(redOn ? 0x111155 : 0x2244ff);
+  }
+}
+
 export function updatePolice(G, dt) {
   for (const cruiser of G.wanted.police) {
     if (!cruiser.alive) continue;
-    // Screenshot staging: formation cruisers hold station beside the player.
     if (G.shotMode && cruiser.shotFollow) {
-      const anchor = G.player.car || G.player;
-      const { dx, dz } = cruiser.shotFollow;
-      const sin = Math.sin(anchor.yaw);
-      const cos = Math.cos(anchor.yaw);
-      cruiser.pos.x = anchor.pos.x + cos * dx + sin * dz;
-      cruiser.pos.z = anchor.pos.z - sin * dx + cos * dz;
-      cruiser.yaw = anchor.yaw;
-      cruiser.speed = anchor.speed || 0;
-      cruiser.mesh.position.copy(cruiser.pos);
-      cruiser.mesh.rotation.y = cruiser.yaw;
-      spinWheels(cruiser, dt);
-      cruiser.flashT += dt * 6;
-      if (cruiser.lightBar) {
-        const redOn = Math.sin(cruiser.flashT) > 0;
-        cruiser.lightBar.red.material.color.setHex(redOn ? 0xff2222 : 0x551111);
-        cruiser.lightBar.blue.material.color.setHex(redOn ? 0x111155 : 0x2244ff);
-      }
+      updateFormationCruiser(cruiser, G.player.car || G.player, dt);
       continue;
     }
     updatePoliceCar(cruiser, G.player.pos, dt, G.city.colliders, G.cars, (cop) => {
@@ -162,5 +179,6 @@ export function clearWanted(G) {
   wanted.level = 0;
   wanted.quietTimer = 0;
   wanted.bustTimer = 0;
+  wanted.speedingTimer = 0;
   syncPolice(G);
 }

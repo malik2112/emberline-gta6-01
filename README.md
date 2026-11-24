@@ -21,26 +21,36 @@ music — is original fiction; no part of any commercial game is used.
 
 - **A whole town, procedurally built**: a 6×6-block grid of window-lit
   towers with crosswalks and streetlights, Kessler's Yard, the DOCK 9
-  gantry crane, container stacks along the quay, piers and harbor water.
+  gantry crane, container stacks along the quay, a harbor lighthouse,
+  benches on the promenade, piers and harbor water.
 - **Drive anything**: traffic cruises the road graph and yields to cars
   ahead; walk up to any car and press **E** to take it. The driving model
-  is velocity-based — grip pulls travel toward the nose, the handbrake
-  breaks it into a slide, and brake lights flare when you slow down.
+  pushes engine force against drag, grip pulls travel toward the nose,
+  the handbrake breaks it into a slide, brake lights flare when you slow
+  down, reverse lights glow when you back up, and a battered engine
+  starts smoking.
 - **Signature mechanic — NITRO**: hold **Shift** in a car to burn the
-  nitro tank for +35% top speed. The tank refills while you coast.
-- **Wanted system**: steal, run someone down, or open fire and the stars
-  climb. Harbor PD cruisers dispatch to match the level, chase, ram, and
-  bust you on foot. Stay quiet and out of sight and the heat cools.
-- **Combat**: a 12-round pistol with tracers, muzzle flash, reloads and
-  spread that blooms under rapid fire; rival crew who shoot back.
-- **People**: walkers stroll the pavements, idle at corners, and sprint
-  away from gunfire or a car arriving too fast.
-- **HUD**: cash, health, wanted stars, a live minimap with traffic and
-  cruiser blips, mission objective, speed, ammo, nitro tank, an in-game
-  clock, a district readout, and a synth radio (DOCK FM 101.3) generated
-  live with WebAudio.
-- **Save**: progress persists in localStorage (v2 records, v1 migrated);
-  Continue resumes at the yard.
+  nitro tank for +35% top speed, with flame puffs from the tailpipes.
+  The tank refills while you coast.
+- **Wanted system**: steal, run someone down, speed past a cruiser, or
+  open fire and the stars climb. Harbor PD cruisers dispatch to match
+  the level, chase, ram, and bust you on foot. Stay quiet and out of
+  sight and the heat cools.
+- **Combat**: a 12-round pistol with tracers, a pooled muzzle flash,
+  camera kick, reloads and spread that blooms under rapid fire; rival
+  crew who shoot back.
+- **People**: walkers stroll the pavements, idle at corners, check their
+  phones, step aside for a car closing in, and sprint away from gunfire
+  or a car arriving too fast.
+- **On foot**: sprint is gated by a stamina meter — empty it and sprint
+  locks until it refills past the line. Footsteps tick as you walk.
+- **HUD**: cash, health, stamina, wanted stars, a live minimap with
+  traffic and cruiser blips, a compass strip, mission objective, speed,
+  ammo, nitro tank, an in-game clock, a district readout, and a synth
+  radio (DOCK FM 101.3) generated live with WebAudio.
+- **Save**: progress persists in localStorage (v3 records; v1/v2 migrate
+  forward, best cash ever held is tracked); Continue resumes at the yard.
+  Failing a mission costs $25 of Mara's patience.
 
 ## Controls
 
@@ -64,18 +74,25 @@ music — is original fiction; no part of any commercial game is used.
 - `game/src/main.js` — boot, fixed-step loop, input, car enter/exit, flows
 - `game/src/config.js` — tuning, palette, districts, story text
 - `game/src/city.js` — procedural city, collisions, road graph
-- `game/src/vehicles.js` — car meshes, drift driving model, traffic + police AI
-- `game/src/pedestrians.js` — walkers, fleeing, fallen
-- `game/src/player.js` — on-foot movement, head-bob, third-person camera
+- `game/src/vehicles.js` — car meshes, drift driving model, traffic + police AI, exhaust/smoke
+- `game/src/pedestrians.js` — walkers, phone idle, sidestep, fleeing, fallen
+- `game/src/player.js` — on-foot movement, stamina, head-bob, third-person camera
 - `game/src/combat.js` — pistol, tracers, rivals
-- `game/src/wanted.js` — wanted level, police dispatch, busted
-- `game/src/missions.js` — the five-job story
-- `game/src/hud.js` — HUD + live minimap
+- `game/src/wanted.js` — wanted level, speeding, police dispatch, busted
+- `game/src/missions.js` — the five-job story (dispatch-table handlers)
+- `game/src/hud.js` — HUD + compass + live minimap
 - `game/src/save.js` — localStorage save/load with migration
 - `game/src/audio.js` — synthesised sound + radio (WebAudio, no files)
 - `game/src/shots.js` — staged scenes for the screenshots (`?shot=`)
 - `game/src/selftest.js` — headless play-through checks (`?selftest=1`)
 - `game/vendor/three/three.module.min.js` — three.js (MIT), vendored
+
+## Checks
+
+```sh
+npm run check        # node --check every game source file
+node main.ts         # hand-in: copies game + screenshots, writes dossier.json
+```
 
 ## License
 

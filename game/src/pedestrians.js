@@ -1,17 +1,22 @@
-// EMBERLINE — pedestrians.js (round 3 re-author)
+// EMBERLINE — pedestrians.js (round 3 redo)
 // The people of Emberline: low-poly walkers who stroll between sidewalk
-// corners, idle for a beat, then move on — and sprint away from gunfire
-// or a car arriving too fast. One mesh builder serves peds, rivals, player.
+// corners, idle for a beat, glance at their phones, step aside for a car
+// closing in — and sprint away from gunfire or a speeding car. One mesh
+// builder serves peds, rivals and the player.
 import * as THREE from 'three';
 import { TRAFFIC } from './config.js';
 
-const SHIRT_COLORS = [0xd95f4b, 0x4b8ad9, 0x53b06a, 0xd9b84b, 0x9a5fd0, 0xe8e8e8, 0x3a3f45, 0xe08aa8];
-const SKIN_TONES = [0xc98e6a, 0x8a5a3a, 0xe8b89a, 0x6a4230];
+const SHIRTS = [0xd95f4b, 0x4b8ad9, 0x53b06a, 0xd9b84b, 0x9a5fd0, 0xe8e8e8, 0x3a3f45, 0xe08aa8];
+const SKINS = [0xc98e6a, 0x8a5a3a, 0xe8b89a, 0x6a4230];
 
-function wrapAngle(a) {
+function angleDiff(a) {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
+}
+
+function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 export function makePersonMesh(shirtColor, skinColor = 0xc98e6a) {
@@ -51,15 +56,15 @@ export function makePersonMesh(shirtColor, skinColor = 0xc98e6a) {
 }
 
 export function spawnPed(scene, x, z, rng, kind = 'walker') {
-  const shirt = SHIRT_COLORS[Math.floor(rng() * SHIRT_COLORS.length)];
-  const skin = SKIN_TONES[Math.floor(rng() * SKIN_TONES.length)];
-  const { group, legL, legR, armL, armR } = makePersonMesh(shirt, skin);
-  group.position.set(x, 0, z);
-  scene.add(group);
+  const shirt = SHIRTS[Math.floor(rng() * SHIRTS.length)];
+  const skin = SKINS[Math.floor(rng() * SKINS.length)];
+  const built = makePersonMesh(shirt, skin);
+  built.group.position.set(x, 0, z);
+  scene.add(built.group);
   return {
     kind,
-    mesh: group,
-    legL, legR, armL, armR,
+    mesh: built.group,
+    legL: built.legL, legR: built.legR, armL: built.armL, armR: built.armR,
     pos: new THREE.Vector3(x, 0, z),
     yaw: rng() * Math.PI * 2,
     speed: 0,
@@ -71,6 +76,8 @@ export function spawnPed(scene, x, z, rng, kind = 'walker') {
     fleeing: false,
     fleeTimer: 0,
     idleSway: rng() * Math.PI * 2,
+    phoneTimer: 0,     // counts down while the walker checks a phone
+    sidestepTimer: 0,  // counts down while stepping aside for a car
   };
 }
 
@@ -85,7 +92,30 @@ export function randomSidewalkPoint(centers, rng) {
   };
 }
 
-export function updatePed(ped, centers, rng, dt, dangerPos, colliders) {
+// A car closing in from the front makes the walker step sideways.
+export function sidestepForCar(ped, cars) {
+  if (ped.sidestepTimer > 0) return;
+  for (const car of cars) {
+    if (!car.alive || Math.abs(car.speed) < 4) continue;
+    const dx = car.pos.x - ped.pos.x;
+    const dz = car.pos.z - ped.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > TRAFFIC.pedSidestepRange) continue;
+    // Only if the car is actually heading at the walker.
+    const approaching = (dx * Math.sin(car.yaw) + dz * Math.cos(car.yaw)) / dist;
+    if (approaching < 0.6) continue;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    ped.target = {
+      x: ped.pos.x + Math.cos(car.yaw) * side * 4,
+      z: ped.pos.z - Math.sin(car.yaw) * side * 4,
+    };
+    ped.sidestepTimer = 1.2;
+    ped.waitTimer = 0;
+    return;
+  }
+}
+
+export function updatePed(ped, centers, rng, dt, dangerPos, colliders, cars = []) {
   if (!ped.alive) return;
 
   // Danger nearby (shots, a speeding car) flips the walker into a sprint.
@@ -100,19 +130,36 @@ export function updatePed(ped, centers, rng, dt, dangerPos, colliders) {
         z: ped.pos.z + (ped.pos.z - dangerPos.z) * 2,
       };
       ped.waitTimer = 0;
+      ped.phoneTimer = 0;
     }
   }
   if (ped.fleeTimer > 0) {
     ped.fleeTimer -= dt;
     if (ped.fleeTimer <= 0) ped.fleeing = false;
   }
+  if (ped.sidestepTimer > 0) ped.sidestepTimer -= dt;
+  if (!ped.fleeing) sidestepForCar(ped, cars);
+
+  if (ped.phoneTimer > 0) {
+    // Standing still, one arm raised to a phone.
+    ped.phoneTimer -= dt;
+    ped.speed = 0;
+    ped.armR.rotation.x = -1.9;
+    ped.armL.rotation.x = 0;
+    ped.legL.rotation.x = 0;
+    ped.legR.rotation.x = 0;
+    ped.mesh.position.copy(ped.pos);
+    return;
+  }
+  ped.armR.rotation.x = 0;
 
   if (ped.waitTimer > 0) {
     ped.waitTimer -= dt;
     ped.speed = 0;
-    // Idle sway while standing at a corner.
+    // Idle sway while standing at a corner; sometimes checks the phone.
     ped.idleSway += dt * 1.4;
     ped.mesh.rotation.z = Math.sin(ped.idleSway) * 0.03;
+    if (ped.waitTimer <= 0 && rng() < 0.3) ped.phoneTimer = 2 + rng() * 3;
   } else {
     ped.mesh.rotation.z = 0;
     if (!ped.target) ped.target = randomSidewalkPoint(centers, rng);
@@ -125,7 +172,7 @@ export function updatePed(ped, centers, rng, dt, dangerPos, colliders) {
       ped.speed = 0;
     } else {
       const desiredYaw = Math.atan2(dx, dz);
-      ped.yaw += Math.max(-3 * dt, Math.min(3 * dt, wrapAngle(desiredYaw - ped.yaw)));
+      ped.yaw += clamp(angleDiff(desiredYaw - ped.yaw), -3 * dt, 3 * dt);
       const targetSpeed = ped.fleeing ? TRAFFIC.pedFleeSpeed : TRAFFIC.pedSpeed;
       ped.speed += (targetSpeed - ped.speed) * Math.min(1, dt * 3);
       ped.pos.x += Math.sin(ped.yaw) * ped.speed * dt;
@@ -138,7 +185,7 @@ export function updatePed(ped, centers, rng, dt, dangerPos, colliders) {
   ped.legL.rotation.x = swing;
   ped.legR.rotation.x = -swing;
   ped.armL.rotation.x = -swing * 0.8;
-  ped.armR.rotation.x = swing * 0.8;
+  if (ped.phoneTimer <= 0) ped.armR.rotation.x = swing * 0.8;
   ped.mesh.position.copy(ped.pos);
   ped.mesh.rotation.y = ped.yaw;
 }

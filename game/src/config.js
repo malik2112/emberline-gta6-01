@@ -1,13 +1,13 @@
-// EMBERLINE — config.js (round 3 re-author)
-// Single source of truth for every tuning knob, colour and line of story
-// copy. Systems import from here instead of scattering literals, so the
-// whole game can be re-balanced from one file. All names are fiction.
+// EMBERLINE — config.js (round 3 redo)
+// Every number, colour and line of dialogue the game uses, in one place.
+// Systems read from here; nothing else hard-codes a tuning value. All
+// names, places and people are original fiction.
 
 export const GAME_TITLE = 'EMBERLINE';
 export const GAME_SUBTITLE = 'A dockside crime story — drive, steal, run';
-export const SAVE_KEY = 'emberline-save-v2';
+export const SAVE_KEY = 'emberline-save-v3';
 
-// World grid. Streets sit on the grid lines; blocks fill the squares between.
+// The town is a grid: streets run on the grid lines, blocks fill the rest.
 export const CITY = {
   blocks: 6,
   block: 70,
@@ -22,7 +22,7 @@ export const CITY = {
   sunIntensity: 2.3,
 };
 
-// Kessler's Yard — every job starts and ends at Mara's chop-shop.
+// Mara's chop-shop on Quay Row: every job starts and ends here.
 export const HUB = { x: -186, z: 168 };
 export const HUB_NAME = "Kessler's Yard";
 export const PD_NAME = 'Harbor PD';
@@ -42,7 +42,7 @@ export const MECHANIC = {
   accelMultiplier: 1.5,
 };
 
-// On-foot tuning.
+// On-foot tuning, including the sprint stamina meter.
 export const PLAYER = {
   walkSpeed: 6,
   runSpeed: 11.5,
@@ -50,8 +50,11 @@ export const PLAYER = {
   height: 1.8,
   eyeHeight: 1.62,
   maxHp: 100,
-  jumpSpeed: 0,
   headBobAmount: 0.05,
+  staminaMax: 100,
+  staminaDrain: 22,    // per second while sprinting
+  staminaRegen: 14,    // per second while not sprinting
+  staminaLockout: 25,  // below this, sprint stays locked until it refills
 };
 
 // Arcade car tuning — grip pulls velocity toward the nose, handbrake loosens it.
@@ -65,6 +68,7 @@ export const CAR = {
   handbrakeTurn: 3.2,
   radius: 1.5,
   driftGrip: 1.6,
+  smokeDamage: 0.55,   // past this damage the engine starts smoking
 };
 
 // Ambient population.
@@ -74,6 +78,7 @@ export const TRAFFIC = {
   pedCount: 16,
   pedSpeed: 1.6,
   pedFleeSpeed: 4.8,
+  pedSidestepRange: 7, // walkers step aside for a car closing in
 };
 
 // Wanted ladder.
@@ -87,6 +92,10 @@ export const WANTED = {
   heatShoot: 1,
   heatKillCop: 2,
   heatRamCop: 1,
+  heatSpeeding: 1,
+  speedingSpeed: 33,   // km/h past a cruiser that counts as speeding
+  speedingRange: 42,   // cruiser must be this close to clock you
+  speedingCooldown: 20,
   coolDistance: 55, // cruisers must be at least this far for heat to drop
 };
 
@@ -101,7 +110,9 @@ export const COMBAT = {
   copHp: 80,
   rivalHp: 100,
   spreadBase: 0.006,
-  spreadBloom: 0.004, // extra spread per rapid shot, decays over time
+  spreadBloom: 0.004, // extra spread per rapid shot
+  spreadDecay: 0.06,  // bloom shed per second
+  cameraKick: 0.022,  // pitch kick per shot
 };
 
 // Sunset-over-the-harbor palette.
@@ -124,7 +135,19 @@ export const PALETTE = {
   minimapSea: '#1d4e5e',
   minimapSand: '#8a8f96',
   beacon: 0xffd23a,
+  lighthouse: 0xd83a2e,
+  bench: 0x6a4a2a,
 };
+
+// Gameplay clearings: circles no tower may overlap, so mission targets,
+// crate drops, the safehouse and Mara's yard stay reachable on foot.
+export const CLEARINGS = [
+  { x: -186, z: 168, r: 16 }, // Kessler's Yard + Mara's car
+  { x: -170, z: -170, r: 12 }, // Crate Run drop 1
+  { x: 170, z: 170, r: 12 },  // Crate Run drop 2
+  { x: 30, z: -170, r: 12 },  // Crate Run drop 3
+  { x: 100, z: -100, r: 12 }, // Heat on the Docks safehouse
+];
 
 // District names shown on the HUD location readout.
 export const DISTRICTS = [
@@ -132,6 +155,7 @@ export const DISTRICTS = [
   { name: 'DOCK 9', x: 150, z: -120 },
   { name: 'CRANE STREET', x: 100, z: -60 },
   { name: 'OLD MARKET', x: -60, z: -60 },
+  { name: 'FISH MARKET', x: 180, z: 60 },
   { name: 'EMBERLINE', x: 0, z: 0 },
 ];
 
@@ -143,6 +167,12 @@ export function districtAt(x, z) {
     if (dist < bestD) { bestD = dist; best = d; }
   }
   return best.name;
+}
+
+// Compass heading (degrees, 0 = north) from a yaw angle.
+export function headingDegrees(yaw) {
+  const deg = ((-yaw * 180) / Math.PI) % 360;
+  return (deg + 360) % 360;
 }
 
 // Story copy. Kade Venn owes Mara Kessler; five jobs settle it.

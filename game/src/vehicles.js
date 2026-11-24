@@ -1,21 +1,27 @@
-// EMBERLINE — vehicles.js (round 3 re-author)
-// Everything with wheels: procedural car meshes (with brake-light glow),
-// a velocity-based arcade driving model where grip aligns travel to the
-// nose (handbrake breaks that alignment into a slide), traffic that stays
-// on the road graph, and police cruisers that chase and ram.
+// EMBERLINE — vehicles.js (round 3 redo)
+// Everything with wheels: procedural car meshes (brake lights, reverse
+// lights, police light bar), an arcade driving model where the engine
+// pushes against drag and grip swings the velocity vector toward the
+// nose (handbrake breaks that alignment into a slide), traffic that
+// stays on the road graph, police cruisers that chase and ram, and
+// exhaust/smoke puffs for boosted or battered cars.
 import * as THREE from 'three';
 import { CAR, PALETTE, CITY, MECHANIC } from './config.js';
 import { collideCircle } from './city.js';
 
 let nextCarId = 0;
 
-function wrapAngle(a) {
+function angleDiff(a) {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
 
-export function makeCarMesh(color, isPolice = false) {
+function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+export function buildCarBody(color, isPolice = false) {
   const group = new THREE.Group();
   const paintMat = new THREE.MeshLambertMaterial({ color });
   const glassMat = new THREE.MeshLambertMaterial({ color: 0x9fc4e0 });
@@ -28,10 +34,16 @@ export function makeCarMesh(color, isPolice = false) {
   const roof = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.08, 2.3), paintMat);
   roof.position.set(0, 1.4, -0.2);
   group.add(roof);
+  // Front bumper + grille strip so the nose reads at distance.
+  const bumper = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.22, 0.3), new THREE.MeshLambertMaterial({ color: 0x22262c }));
+  bumper.position.set(0, 0.32, 2.2);
+  group.add(bumper);
 
   const headMat = new THREE.MeshBasicMaterial({ color: 0xfff6c8 });
   const tailMat = new THREE.MeshBasicMaterial({ color: 0xff2a22 });
+  const reverseMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f2 });
   const tailLights = [];
+  const reverseLights = [];
   for (const sideX of [-0.7, 0.7]) {
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.18, 0.1), headMat);
     head.position.set(sideX, 0.6, 2.21);
@@ -40,6 +52,11 @@ export function makeCarMesh(color, isPolice = false) {
     tail.position.set(sideX, 0.6, -2.21);
     group.add(tail);
     tailLights.push(tail);
+    const rev = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.1), reverseMat.clone());
+    rev.position.set(sideX * 0.55, 0.34, -2.21);
+    rev.material.color.setHex(0x555555);
+    group.add(rev);
+    reverseLights.push(rev);
   }
 
   const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 10);
@@ -73,22 +90,23 @@ export function makeCarMesh(color, isPolice = false) {
     lightBar = { red: redLamp, blue: blueLamp };
   }
   group.traverse((o) => { if (o.isMesh) o.castShadow = false; });
-  return { group, wheels, lightBar, tailLights, paintMat };
+  return { group, wheels, lightBar, tailLights, reverseLights, paintMat };
 }
 
 export function spawnCar(scene, x, z, yaw, color, kind = 'traffic') {
-  const { group, wheels, lightBar, tailLights, paintMat } = makeCarMesh(color, kind === 'police');
-  group.position.set(x, 0, z);
-  group.rotation.y = yaw;
-  scene.add(group);
+  const built = buildCarBody(color, kind === 'police');
+  built.group.position.set(x, 0, z);
+  built.group.rotation.y = yaw;
+  scene.add(built.group);
   return {
     id: ++nextCarId,
     kind,
-    mesh: group,
-    wheels,
-    lightBar,
-    tailLights,
-    paintMat,
+    mesh: built.group,
+    wheels: built.wheels,
+    lightBar: built.lightBar,
+    tailLights: built.tailLights,
+    reverseLights: built.reverseLights,
+    paintMat: built.paintMat,
     paintColor: new THREE.Color(color),
     damage: 0, // 0 pristine .. 1 wrecked; darkens the paint as it grows
     pos: new THREE.Vector3(x, 0, z),
@@ -105,6 +123,8 @@ export function spawnCar(scene, x, z, yaw, color, kind = 'traffic') {
     alive: true,
     flashT: Math.random() * 10,
     braking: false,
+    reversing: false,
+    smokeTimer: 0,
   };
 }
 
@@ -112,6 +132,12 @@ function setBrakeGlow(car, braking) {
   if (car.braking === braking || !car.tailLights) return;
   car.braking = braking;
   for (const tail of car.tailLights) tail.material.color.setHex(braking ? 0xff5544 : 0xff2a22);
+}
+
+function setReverseGlow(car, reversing) {
+  if (car.reversing === reversing || !car.reverseLights) return;
+  car.reversing = reversing;
+  for (const rev of car.reverseLights) rev.material.color.setHex(reversing ? 0xffffff : 0x555555);
 }
 
 function pickRoadTarget(car, nodes, rng) {
@@ -128,8 +154,7 @@ export function updateTrafficCar(car, nodes, rng, dt, allCars, colliders) {
   const dz = car.target.z - car.pos.z;
   if (Math.hypot(dx, dz) < 3) { pickRoadTarget(car, nodes, rng); return; }
   const desiredYaw = Math.atan2(dx, dz);
-  const turn = Math.max(-1.6 * dt, Math.min(1.6 * dt, wrapAngle(desiredYaw - car.yaw)));
-  car.yaw += turn;
+  car.yaw += clamp(angleDiff(desiredYaw - car.yaw), -1.6 * dt, 1.6 * dt);
 
   // Yield to anything stopped or slow directly ahead.
   let blocked = false;
@@ -158,40 +183,45 @@ export function spinWheels(car, dt) {
   for (const wheel of car.wheels) wheel.rotation.x += spin;
 }
 
-// Player driving: throttle feeds a velocity vector; grip rotates that vector
-// toward the car's nose. Handbrake drops grip so the car slides sideways.
+// Player driving: the engine pushes against drag, so top speed emerges
+// from the balance; grip rotates the velocity vector toward the nose.
+// Handbrake drops grip so the car slides sideways.
 export function updatePlayerCar(car, input, dt, colliders, allCars, onCrash) {
   const throttle = (input.up ? 1 : 0) - (input.down ? 1 : 0);
   const steerInput = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   const handbrake = !!input.handbrake;
 
-  let maxSpeed = CAR.maxSpeed;
-  let accel = CAR.accel;
+  let topSpeed = CAR.maxSpeed;
+  let engine = CAR.accel;
   car.boosting = false;
   if (MECHANIC.type === 'nitro' && input.run && car.boost > 0 && throttle > 0) {
-    maxSpeed *= MECHANIC.speedMultiplier;
-    accel *= MECHANIC.accelMultiplier;
+    topSpeed *= MECHANIC.speedMultiplier;
+    engine *= MECHANIC.accelMultiplier;
     car.boost = Math.max(0, car.boost - dt * MECHANIC.boostDrain);
     car.boosting = true;
   } else {
     car.boost = Math.min(100, car.boost + dt * MECHANIC.boostRefill);
   }
   setBrakeGlow(car, throttle < 0 || handbrake);
+  setReverseGlow(car, car.speed < -0.5);
 
-  const speed01 = Math.min(1, Math.abs(car.speed) / maxSpeed);
+  // Steering authority grows with speed, then saturates.
+  const speed01 = Math.min(1, Math.abs(car.speed) / topSpeed);
   const turnRate = handbrake ? CAR.handbrakeTurn : CAR.turnRate;
   const steerTarget = steerInput * turnRate * (0.35 + 0.65 * speed01) * (car.speed < -0.5 ? -1 : 1);
   car.steer += (steerTarget - car.steer) * Math.min(1, dt * 8);
   car.yaw += car.steer * dt * Math.min(1, Math.abs(car.speed) / 6 + 0.15);
 
-  if (throttle > 0) car.speed += accel * dt * (1 - speed01 * 0.75);
-  else if (throttle < 0) {
+  // Engine force minus quadratic-ish drag; braking is a hard decel.
+  if (throttle > 0) {
+    car.speed += engine * dt * (1 - (car.speed / topSpeed) * 0.75);
+  } else if (throttle < 0) {
     if (car.speed > 0.5) car.speed -= CAR.brake * dt;
-    else car.speed -= accel * 0.6 * dt;
+    else car.speed -= engine * 0.6 * dt;
   } else {
     car.speed -= car.speed * Math.min(1, dt * (handbrake ? 2.2 : 0.7));
   }
-  car.speed = Math.max(-CAR.reverseMax, Math.min(maxSpeed, car.speed));
+  car.speed = clamp(car.speed, -CAR.reverseMax, topSpeed);
   if (Math.abs(car.speed) < 0.05 && throttle === 0) car.speed = 0;
 
   // Blend velocity toward the nose by grip; low grip = drift.
@@ -233,8 +263,8 @@ export function updatePlayerCar(car, input, dt, colliders, allCars, onCrash) {
       car.speed *= 0.92;
     }
   }
-  car.pos.x = Math.max(-CITY.boundZ, Math.min(CITY.boundX, car.pos.x));
-  car.pos.z = Math.max(-CITY.boundZ, Math.min(CITY.boundZ, car.pos.z));
+  car.pos.x = clamp(car.pos.x, -CITY.boundZ, CITY.boundX);
+  car.pos.z = clamp(car.pos.z, -CITY.boundZ, CITY.boundZ);
   car.mesh.position.copy(car.pos);
   car.mesh.rotation.y = car.yaw;
   spinWheels(car, dt);
@@ -245,7 +275,7 @@ export function updatePoliceCar(car, playerPos, dt, colliders, allCars, onRam) {
   const dz = playerPos.z - car.pos.z;
   const dist = Math.hypot(dx, dz);
   const desiredYaw = Math.atan2(dx, dz);
-  car.yaw += Math.max(-2.4 * dt, Math.min(2.4 * dt, wrapAngle(desiredYaw - car.yaw)));
+  car.yaw += clamp(angleDiff(desiredYaw - car.yaw), -2.4 * dt, 2.4 * dt);
   const pursuitSpeed = dist > 4 ? Math.min(34, 16 + dist * 0.35) : 6;
   car.speed += (pursuitSpeed - car.speed) * Math.min(1, dt * 1.6);
   car.pos.x += Math.sin(car.yaw) * car.speed * dt;
@@ -261,6 +291,88 @@ export function updatePoliceCar(car, playerPos, dt, colliders, allCars, onRam) {
     const redOn = Math.sin(car.flashT) > 0;
     car.lightBar.red.material.color.setHex(redOn ? 0xff2222 : 0x551111);
     car.lightBar.blue.material.color.setHex(redOn ? 0x111155 : 0x2244ff);
+  }
+}
+
+// --- exhaust + damage smoke -------------------------------------------------
+// A small shared pool of soft sprites; boosted cars puff blue-orange flame
+// smoke, battered cars leak grey smoke from the hood.
+let puffPool = null;
+
+function makePuffTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createRadialGradient(32, 32, 4, 32, 32, 30);
+  grad.addColorStop(0, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
+}
+
+export function initVehicleFx(scene) {
+  if (puffPool) return puffPool;
+  const tex = makePuffTexture();
+  puffPool = [];
+  for (let i = 0; i < 24; i++) {
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.setScalar(1);
+    sprite.visible = false;
+    scene.add(sprite);
+    puffPool.push({ sprite, life: 0, maxLife: 1, grow: 1 });
+  }
+  return puffPool;
+}
+
+function emitPuff(scene, x, y, z, color, size, life) {
+  if (!puffPool) initVehicleFx(scene);
+  const puff = puffPool.find((p) => p.life <= 0);
+  if (!puff) return;
+  puff.sprite.position.set(x, y, z);
+  puff.sprite.material.color.setHex(color);
+  puff.sprite.material.opacity = 0.7;
+  puff.sprite.scale.setScalar(size);
+  puff.sprite.visible = true;
+  puff.life = life;
+  puff.maxLife = life;
+  puff.grow = size * 2.2;
+}
+
+export function updateVehicleFx(G, dt) {
+  if (!puffPool) return;
+  for (const puff of puffPool) {
+    if (puff.life <= 0) continue;
+    puff.life -= dt;
+    puff.sprite.position.y += dt * 1.6;
+    const remain = Math.max(0, puff.life / puff.maxLife);
+    puff.sprite.material.opacity = 0.7 * remain;
+    puff.sprite.scale.setScalar(puff.grow * (1 - remain * 0.5) + 0.4);
+    if (puff.life <= 0) puff.sprite.visible = false;
+  }
+  const car = G.player.car;
+  if (!car || !car.alive) return;
+  // Nitro exhaust: small flame puffs from the tailpipes while boosting.
+  if (car.boosting) {
+    car.smokeTimer -= dt;
+    if (car.smokeTimer <= 0) {
+      car.smokeTimer = 0.09;
+      const bx = car.pos.x - Math.sin(car.yaw) * 2.3;
+      const bz = car.pos.z - Math.cos(car.yaw) * 2.3;
+      emitPuff(G.scene, bx, 0.6, bz, 0xff8a3a, 0.7, 0.4);
+    }
+  }
+  // Battered engine: grey smoke from the hood.
+  if (car.damage >= CAR.smokeDamage) {
+    car.smokeTimer -= dt;
+    if (car.smokeTimer <= 0) {
+      car.smokeTimer = 0.22;
+      const hx = car.pos.x + Math.sin(car.yaw) * 1.6;
+      const hz = car.pos.z + Math.cos(car.yaw) * 1.6;
+      emitPuff(G.scene, hx, 1.1, hz, 0x888888, 1.1, 0.9);
+    }
   }
 }
 

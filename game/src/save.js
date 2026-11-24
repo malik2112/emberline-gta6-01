@@ -1,11 +1,12 @@
-// EMBERLINE — save.js (round 3 re-author)
-// Progress lives in localStorage: cash, story position, lifetime stats.
-// Version 2 records migrate version 1 saves forward instead of dropping
-// them, and Continue always resumes on foot outside Kessler's Yard.
+// EMBERLINE — save.js (round 3 redo)
+// Progress lives in localStorage: cash, story position, lifetime stats,
+// best cash ever held. Version 3 records migrate older saves forward
+// instead of dropping them, and Continue always resumes on foot outside
+// Kessler's Yard.
 import { SAVE_KEY, HUB } from './config.js';
 
-const LEGACY_KEY = 'emberline-save-v1';
-const CURRENT_VERSION = 2;
+const LEGACY_KEYS = ['emberline-save-v2', 'emberline-save-v1'];
+const CURRENT_VERSION = 3;
 
 function readRaw(key) {
   try {
@@ -19,6 +20,19 @@ function readRaw(key) {
 function migrate(data) {
   if (!data || typeof data !== 'object') return null;
   if (data.version === CURRENT_VERSION) return data;
+  if (data.version === 2) {
+    return {
+      version: CURRENT_VERSION,
+      cash: data.cash ?? 50,
+      missionIndex: data.missionIndex ?? 0,
+      missionsDone: data.missionsDone ?? 0,
+      carsStolen: data.carsStolen ?? 0,
+      shotsFired: data.shotsFired ?? 0,
+      playSeconds: data.playSeconds ?? 0,
+      bestCash: data.cash ?? 50,
+      savedAt: data.savedAt ?? new Date().toISOString(),
+    };
+  }
   if (data.version === 1) {
     return {
       version: CURRENT_VERSION,
@@ -28,6 +42,7 @@ function migrate(data) {
       carsStolen: data.carsStolen ?? 0,
       shotsFired: data.shotsFired ?? 0,
       playSeconds: data.playSeconds ?? 0,
+      bestCash: data.cash ?? 50,
       savedAt: data.savedAt ?? new Date().toISOString(),
     };
   }
@@ -36,6 +51,7 @@ function migrate(data) {
 
 export function saveGame(G) {
   try {
+    const previous = readRaw(SAVE_KEY);
     const record = {
       version: CURRENT_VERSION,
       cash: G.player.cash,
@@ -44,6 +60,7 @@ export function saveGame(G) {
       carsStolen: G.stats.carsStolen,
       shotsFired: G.stats.shotsFired,
       playSeconds: Math.floor(G.time),
+      bestCash: Math.max(G.player.cash, previous?.bestCash ?? 0),
       savedAt: new Date().toISOString(),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(record));
@@ -56,10 +73,12 @@ export function saveGame(G) {
 export function loadSave() {
   const current = migrate(readRaw(SAVE_KEY));
   if (current) return current;
-  const legacy = migrate(readRaw(LEGACY_KEY));
-  if (legacy) {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(legacy)); } catch (e) { /* read-only storage */ }
-    return legacy;
+  for (const key of LEGACY_KEYS) {
+    const legacy = migrate(readRaw(key));
+    if (legacy) {
+      try { localStorage.setItem(SAVE_KEY, JSON.stringify(legacy)); } catch (e) { /* read-only storage */ }
+      return legacy;
+    }
   }
   return null;
 }
@@ -70,6 +89,7 @@ export function applySave(G, data) {
   G.stats.missionsDone = data.missionsDone ?? 0;
   G.stats.carsStolen = data.carsStolen ?? 0;
   G.stats.shotsFired = data.shotsFired ?? 0;
+  G.stats.bestCash = data.bestCash ?? G.player.cash;
   G.missions.index = Math.min(data.missionIndex ?? 0, 4);
   G.missions.state = 'waiting-hub';
   G.player.pos.set(HUB.x + 6, 0, HUB.z - 18);
@@ -79,7 +99,8 @@ export function applySave(G, data) {
 
 export function hasSave() {
   try {
-    return !!(localStorage.getItem(SAVE_KEY) || localStorage.getItem(LEGACY_KEY));
+    if (localStorage.getItem(SAVE_KEY)) return true;
+    return LEGACY_KEYS.some((key) => localStorage.getItem(key));
   } catch (e) {
     return false;
   }
